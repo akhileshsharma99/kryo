@@ -22,7 +22,9 @@ image = (
     .apt_install("libgl1-mesa-glx", "libglib2.0-0")  # OpenCV deps for ultralytics
     # Install PyTorch with CUDA first
     .pip_install(
-        "torch", "torchvision", "torchaudio",
+        "torch",
+        "torchvision",
+        "torchaudio",
         index_url="https://download.pytorch.org/whl/cu124",
     )
     # Install remaining deps from pyproject.toml
@@ -47,7 +49,7 @@ image = (
             ".mypy_cache",
             ".pytest_cache",
             "results/*.json",  # Don't copy local results
-            "graphs/*.png",    # Don't copy local graphs
+            "graphs/*.png",  # Don't copy local graphs
         ],
     )
 )
@@ -66,7 +68,7 @@ SCENARIOS = [
 ]
 
 
-def _run_benchmark_impl(scenario: str, run_id: int) -> dict:
+def _run_benchmark_impl(scenario: str, run_id: int) -> dict[str, Any]:
     """Run a single benchmark scenario. Each container IS a cold start."""
     import subprocess
 
@@ -102,25 +104,25 @@ def _run_benchmark_impl(scenario: str, run_id: int) -> dict:
 
 # Define benchmark functions for each GPU type
 @app.function(image=image, gpu="H100", timeout=600)
-def run_benchmark_h100(scenario: str, run_id: int) -> dict:
+def run_benchmark_h100(scenario: str, run_id: int) -> dict[str, Any]:
     """Run benchmark on H100."""
     return _run_benchmark_impl(scenario, run_id)
 
 
 @app.function(image=image, gpu="A100", timeout=600)
-def run_benchmark_a100(scenario: str, run_id: int) -> dict:
+def run_benchmark_a100(scenario: str, run_id: int) -> dict[str, Any]:
     """Run benchmark on A100."""
     return _run_benchmark_impl(scenario, run_id)
 
 
 @app.function(image=image, gpu="A10G", timeout=600)
-def run_benchmark_a10g(scenario: str, run_id: int) -> dict:
+def run_benchmark_a10g(scenario: str, run_id: int) -> dict[str, Any]:
     """Run benchmark on A10G."""
     return _run_benchmark_impl(scenario, run_id)
 
 
 @app.function(image=image, gpu="T4", timeout=600)
-def run_benchmark_t4(scenario: str, run_id: int) -> dict:
+def run_benchmark_t4(scenario: str, run_id: int) -> dict[str, Any]:
     """Run benchmark on T4."""
     return _run_benchmark_impl(scenario, run_id)
 
@@ -180,9 +182,7 @@ def aggregate_results(raw_results: list[dict[str, Any]]) -> dict[str, Any]:
                 all_phases[phase].append(duration)
 
         scenarios[scenario] = {
-            "phases": {
-                phase: compute_stats(values) for phase, values in all_phases.items()
-            },
+            "phases": {phase: compute_stats(values) for phase, values in all_phases.items()},
             "total": compute_stats(all_totals),
             "runs": len(results),
         }
@@ -191,7 +191,7 @@ def aggregate_results(raw_results: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @app.local_entrypoint()
-def main(runs: int = 50, gpu: str = "H100", output: str = "results/latest.json"):
+def main(runs: int = 50, gpu: str = "H100", output: str = "results/latest.json") -> None:
     """Run all benchmarks on Modal and aggregate results."""
     if gpu not in GPU_FUNCTIONS:
         raise ValueError(f"Unknown GPU: {gpu}. Available: {list(GPU_FUNCTIONS.keys())}")
@@ -199,9 +199,7 @@ def main(runs: int = 50, gpu: str = "H100", output: str = "results/latest.json")
     run_fn = GPU_FUNCTIONS[gpu]
 
     print(f"GPU: {gpu}")
-    print(
-        f"Starting {len(SCENARIOS)} scenarios x {runs} runs = {len(SCENARIOS) * runs} containers"
-    )
+    print(f"Starting {len(SCENARIOS)} scenarios x {runs} runs = {len(SCENARIOS) * runs} containers")
 
     # Create all (scenario, run_id) combinations
     inputs = [(s, i) for s in SCENARIOS for i in range(runs)]

@@ -59,7 +59,7 @@ def generate_table_image(results: dict[str, Any], output_path: Path) -> None:
 
     # Create figure - tight sizing
     fig_height = len(rows) * 0.35 + 0.8
-    fig, ax = plt.subplots(figsize=(10, fig_height))
+    _, ax = plt.subplots(figsize=(10, fig_height))
     ax.axis("off")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
@@ -202,9 +202,7 @@ def generate_total_comparison(results: dict[str, Any], output_path: Path) -> Non
     _, ax = plt.subplots(figsize=(10, 6))
 
     scenario_names = list(valid_scenarios.keys())
-    totals = [
-        valid_scenarios[s].get("total", {}).get("mean", 0) for s in scenario_names
-    ]
+    totals = [valid_scenarios[s].get("total", {}).get("mean", 0) for s in scenario_names]
     errors = [valid_scenarios[s].get("total", {}).get("std", 0) for s in scenario_names]
 
     x = np.arange(len(scenario_names))

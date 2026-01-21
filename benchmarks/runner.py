@@ -96,9 +96,7 @@ def run_scenario(scenario: str, runs: int) -> dict[str, Any]:
             all_phases[phase].append(duration)
 
     return {
-        "phases": {
-            phase: compute_stats(values) for phase, values in all_phases.items()
-        },
+        "phases": {phase: compute_stats(values) for phase, values in all_phases.items()},
         "total": compute_stats(all_totals),
         "runs": len(results),
         "metadata": results[0].get("metadata", {}),
@@ -121,10 +119,7 @@ def run_all(scenarios: list[str], runs: int) -> dict[str, Any]:
             results["scenarios"][scenario] = scenario_results
 
             # Update global metadata from first successful scenario
-            if (
-                "python_version" not in results["metadata"]
-                and "metadata" in scenario_results
-            ):
+            if "python_version" not in results["metadata"] and "metadata" in scenario_results:
                 results["metadata"].update(scenario_results["metadata"])
         except FileNotFoundError as e:
             print(f"  Skipping: {e}")

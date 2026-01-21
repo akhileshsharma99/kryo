@@ -1,6 +1,8 @@
-# Modal Deployment
+# Cloud Benchmark Runner
 
-Runs cold start benchmarks on [Modal](https://modal.com/) H100 GPUs. Each benchmark spawns a fresh container, measuring true cold start times.
+Runs cold start benchmarks on cloud GPUs. Each benchmark spawns a fresh container, measuring true cold start times.
+
+Currently uses [Modal](https://modal.com/) as the cloud provider - it provides easy sandboxing and on-demand GPU access (H100, A100, A10G, T4).
 
 ## Prerequisites
 
@@ -10,7 +12,7 @@ Runs cold start benchmarks on [Modal](https://modal.com/) H100 GPUs. Each benchm
 ## Setup
 
 ```bash
-cd ci/modal
+cd ci/benchmark-runner
 uv sync
 uv run modal setup  # Authenticate with Modal
 ```
