@@ -28,6 +28,83 @@ def load_results(results_path: Path) -> dict[str, Any]:
         return result
 
 
+def generate_table_image(results: dict[str, Any], output_path: Path) -> None:
+    """Generate a table image of results."""
+    scenarios = results.get("scenarios", {})
+    metadata = results.get("metadata", {})
+    if not scenarios:
+        print("No scenarios found in results")
+        return
+
+    # Build table data (all times in seconds)
+    columns = ["Scenario", "Total", "import", "cuda_init", "model_load", "first_inference"]
+    rows = []
+
+    for scenario_name, scenario_data in scenarios.items():
+        if "error" in scenario_data:
+            rows.append([scenario_name, "ERROR", "-", "-", "-", "-"])
+            continue
+
+        total = scenario_data.get("total", {}).get("mean", 0)
+        phases = scenario_data.get("phases", {})
+
+        row = [scenario_name, f"{total:.2f}"]
+        for phase in PHASE_ORDER:
+            if phase in phases:
+                value = phases[phase].get("mean", 0)
+                row.append(f"{value:.2f}")
+            else:
+                row.append("-")
+        rows.append(row)
+
+    # Create figure - tight sizing
+    fig_height = len(rows) * 0.35 + 0.8
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+    ax.axis("off")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+    # Create table
+    table = ax.table(
+        cellText=rows,
+        colLabels=columns,
+        cellLoc="center",
+        loc="upper center",
+        colColours=["#4C72B0"] * len(columns),
+    )
+
+    # Style the table
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.0, 1.5)
+
+    # Style header
+    for j in range(len(columns)):
+        table[(0, j)].set_text_props(color="white", fontweight="bold")
+
+    # Alternate row colors
+    for i in range(1, len(rows) + 1):
+        for j in range(len(columns)):
+            if i % 2 == 0:
+                table[(i, j)].set_facecolor("#f0f0f0")
+            else:
+                table[(i, j)].set_facecolor("#ffffff")
+
+    # Title with GPU name and units
+    gpu_name = metadata.get("gpu", "Unknown GPU")
+    ax.set_title(
+        f"Cold Start Benchmarks (seconds) - {gpu_name}",
+        fontsize=11,
+        fontweight="bold",
+        pad=5,
+        loc="center",
+    )
+
+    plt.savefig(output_path, dpi=150, bbox_inches="tight", facecolor="white", pad_inches=0.1)
+    plt.close()
+    print(f"Generated: {output_path}")
+
+
 def print_table(results: dict[str, Any]) -> None:
     """Print a formatted table of results."""
     scenarios = results.get("scenarios", {})
@@ -267,6 +344,7 @@ def main() -> None:
         GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
 
         print("\nGenerating graphs...")
+        generate_table_image(results, GRAPHS_DIR / "table.png")
         generate_phase_breakdown(results, GRAPHS_DIR / "phase_breakdown.png")
         generate_total_comparison(results, GRAPHS_DIR / "total_comparison.png")
         generate_variance_plot(results, GRAPHS_DIR / "variance.png")
