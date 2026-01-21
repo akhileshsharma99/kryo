@@ -1,0 +1,75 @@
+[project]
+name = "benchmarks"
+version = "0.1.0"
+description = "Cold start benchmarking for ML scenarios"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.0",
+    "matplotlib>=3.10.0",
+    "torch>=2.9.0",
+    "ultralytics>=8.4.0",
+    "transformers>=4.57.0",
+    "accelerate>=1.12.0",
+    "sentencepiece>=0.2.0",
+    "einops>=0.8.0",
+    "safetensors>=0.7.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "mypy>=1.19.0",
+    "ruff>=0.9.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "PL",     # Pylint
+    "RUF",    # Ruff-specific
+    "S",      # flake8-bandit (security)
+    "A",      # flake8-builtins
+    "DTZ",    # flake8-datetimez
+    "T10",    # flake8-debugger
+    "ICN",    # flake8-import-conventions
+    "PIE",    # flake8-pie
+    "PT",     # flake8-pytest-style
+    "RSE",    # flake8-raise
+    "RET",    # flake8-return
+    "TID",    # flake8-tidy-imports
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "PERF",   # Perflint
+]
+[tool.ruff.lint.per-file-ignores]
+"scenarios/*.py" = ["T201", "PLC0415"]  # Allow print in scenarios, late imports intentional
+"runner.py" = ["T201", "S603"]  # Print for CLI; subprocess input validated against ALL_SCENARIOS
+"analyze.py" = ["T201"]  # Allow print for CLI output
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+exclude = ["scenarios/", "download_models.py"]
+
+[[tool.mypy.overrides]]
+module = [
+    "ultralytics.*",
+    "transformers.*",
+    "matplotlib.*",
+    "torch.*",
+]
+ignore_missing_imports = true
