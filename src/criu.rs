@@ -1,6 +1,7 @@
 //! CRIU (Checkpoint/Restore in Userspace) wrapper
 
 use crate::{Error, Result};
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -36,7 +37,7 @@ impl Criu {
         }
     }
 
-    /// Restore a process from checkpoint
+    /// Restore a process from checkpoint (blocking)
     pub fn restore(&self) -> Result<()> {
         let status = Command::new("criu")
             .args(["restore"])
@@ -53,5 +54,41 @@ impl Criu {
                 status.code()
             )))
         }
+    }
+
+    /// Restore a process from checkpoint (detached, returns PID)
+    pub fn restore_detached(&self) -> Result<u32> {
+        let pidfile = self.images_dir.join("restore.pid");
+
+        let status = Command::new("criu")
+            .args(["restore"])
+            .arg("-D")
+            .arg(&self.images_dir)
+            .arg("--shell-job")
+            .arg("-d") // Detach
+            .arg("--pidfile")
+            .arg(&pidfile)
+            .status()?;
+
+        if !status.success() {
+            return Err(Error::Criu(format!(
+                "restore failed with exit code: {:?}",
+                status.code()
+            )));
+        }
+
+        // Read PID from pidfile
+        let pid_str = fs::read_to_string(&pidfile)
+            .map_err(|e| Error::Criu(format!("failed to read pidfile: {}", e)))?;
+
+        let pid: u32 = pid_str
+            .trim()
+            .parse()
+            .map_err(|e| Error::Criu(format!("failed to parse PID '{}': {}", pid_str.trim(), e)))?;
+
+        // Clean up pidfile
+        let _ = fs::remove_file(&pidfile);
+
+        Ok(pid)
     }
 }

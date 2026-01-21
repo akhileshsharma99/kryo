@@ -42,18 +42,29 @@ GPU inference has slow cold starts. A model that runs in milliseconds takes **5-
 | Model loading                        | 0.1-5s    |
 | **Total cold start**                 | **5-11s** |
 
-This breaks serverless. You keep instances warm to avoid startup overhead, defeating scale-to-zero.
+This makes serverless difficult and requires keeping instances warm to avoid startup overhead, defeating scale-to-zero.
 
 ## The Solution
 
 Checkpoint your process after setup. Restore in milliseconds.
 
-```bash
-# Snapshot after setup
-kryo snapshot create --name llm -- python setup.py
+```python
+# app.py
+import kryo
 
-# Restore and run
-kryo run --snapshot llm -- python inference.py
+model = load_model()      # Heavy setup
+model.to("cuda")
+kryo.checkpoint()         # Freeze here
+
+result = model(input)     # Runs after restore
+```
+
+```bash
+# Create snapshot (runs setup, freezes at checkpoint)
+kryo snapshot create --name llm -- python app.py
+
+# Restore and run (skips setup, continues from checkpoint)
+kryo run --snapshot llm
 ```
 
 > **~100ms** restore instead of **5-11s** cold start
@@ -62,20 +73,30 @@ kryo run --snapshot llm -- python inference.py
 
 Kryo combines [CRIU](https://criu.org/) (process checkpointing) with NVIDIA's [cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) (GPU state management).
 
-```
-┌─────────────────────────────────────────────────────────┐
-│  kryo snapshot create                                   │
-│  1. Run setup command (imports, model load, warmup)     │
-│  2. cuda-checkpoint --toggle (suspend GPU state)        │
-│  3. criu dump (checkpoint process)                      │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant K as Kryo CLI
+    participant P as Your Process
+    participant G as GPU State
 
-┌─────────────────────────────────────────────────────────┐
-│  kryo run --snapshot                                    │
-│  1. criu restore (restore process)                      │
-│  2. cuda-checkpoint --toggle (resume GPU state)         │
-│  3. exec command (run inference)                        │
-└─────────────────────────────────────────────────────────┘
+    rect rgb(40, 40, 40)
+    note over K,G: kryo snapshot create
+    K->>P: Spawn process
+    P->>P: Imports, model load, warmup
+    P->>K: SIGUSR1 (ready)
+    K->>G: Suspend CUDA state
+    K->>P: CRIU dump (freeze)
+    note over P: 💾 Snapshot saved
+    end
+
+    rect rgb(40, 40, 40)
+    note over K,G: kryo run --snapshot
+    K->>P: CRIU restore (unfreeze)
+    K->>G: Resume CUDA state
+    K->>P: SIGUSR2 (wake up)
+    P->>P: Continue from checkpoint
+    note over P: ⚡ Sub-second cold start
+    end
 ```
 
 ## Requirements
@@ -92,18 +113,26 @@ cargo install kryo
 
 ## Usage
 
-Kryo works with any command that runs on Linux with CUDA.
+Kryo works with any language on Linux with CUDA. Your code needs to signal when setup is complete:
+
+- **Python**: Use the `kryo` package (`pip install kryo`)
+- **Other languages**: Send `SIGUSR1` to parent when ready, handle `SIGUSR2` to wake after restore
+- **Can't modify code?**: Use `--wait` to checkpoint after a fixed delay
 
 ### Create a snapshot
 
 ```bash
+# Signal-based (default) - your code calls kryo.checkpoint()
 kryo snapshot create --name <name> -- <command>
+
+# Timer-based - checkpoint after N seconds (for code you can't modify)
+kryo snapshot create --name <name> --wait 30 -- <command>
 ```
 
 ### Restore and run
 
 ```bash
-kryo run --snapshot <name> -- <command>
+kryo run --snapshot <name>
 ```
 
 ### Manage snapshots
@@ -128,11 +157,11 @@ kryo --help                         # Show help
 cd examples/python/qwen
 uv sync
 
-# Create snapshot (once)
-kryo snapshot create --name qwen -- uv run python setup.py
+# Create snapshot (runs setup, freezes at kryo.checkpoint())
+kryo snapshot create --name qwen -- uv run python qwen.py
 
-# Run from snapshot (sub-second cold start)
-kryo run --snapshot qwen -- uv run python inference.py
+# Restore and run (sub-second cold start)
+kryo run --snapshot qwen
 ```
 
 See [examples/](examples/) for more.

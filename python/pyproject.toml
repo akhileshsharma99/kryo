@@ -1,0 +1,32 @@
+[project]
+name = "kryo"
+version = "0.1.0"
+description = "Sub-second cold starts for GPU inference"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Akhilesh Sharma", email = "sharmaninenine@gmail.com" }
+]
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["gpu", "inference", "checkpoint", "criu", "cold-start"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/akhileshsharma99/kryo"
+Repository = "https://github.com/akhileshsharma99/kryo"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

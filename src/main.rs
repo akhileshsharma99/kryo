@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 use kryo::{Criu, CudaCheckpoint, Snapshot};
+use signal_hook::consts::SIGUSR1;
+use signal_hook::iterator::Signals;
 use std::fs;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "kryo")]
@@ -19,15 +22,11 @@ enum Commands {
         #[command(subcommand)]
         action: SnapshotCommands,
     },
-    /// Run a command with a restored snapshot
+    /// Restore and run a snapshot
     Run {
         /// Name of the snapshot to restore
         #[arg(long)]
         snapshot: String,
-
-        /// Command to run after restore
-        #[arg(last = true)]
-        command: Vec<String>,
     },
 }
 
@@ -38,6 +37,10 @@ enum SnapshotCommands {
         /// Name for the snapshot
         #[arg(long)]
         name: String,
+
+        /// Wait time in seconds before checkpointing (default: wait for SIGUSR1 signal)
+        #[arg(long)]
+        wait: Option<u64>,
 
         /// Command to run and snapshot
         #[arg(last = true)]
@@ -62,12 +65,16 @@ fn main() {
 
     let result = match cli.command {
         Commands::Snapshot { action } => match action {
-            SnapshotCommands::Create { name, command } => cmd_snapshot_create(&name, &command),
+            SnapshotCommands::Create {
+                name,
+                wait,
+                command,
+            } => cmd_snapshot_create(&name, wait, &command),
             SnapshotCommands::List => cmd_snapshot_list(),
             SnapshotCommands::Inspect { name } => cmd_snapshot_inspect(&name),
             SnapshotCommands::Delete { name } => cmd_snapshot_delete(&name),
         },
-        Commands::Run { snapshot, command } => cmd_run(&snapshot, &command),
+        Commands::Run { snapshot } => cmd_run(&snapshot),
     };
 
     if let Err(e) = result {
@@ -76,12 +83,14 @@ fn main() {
     }
 }
 
-fn cmd_snapshot_create(name: &str, command: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_snapshot_create(
+    name: &str,
+    wait: Option<u64>,
+    command: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     if command.is_empty() {
         return Err("No command provided".into());
     }
-
-    println!("Creating snapshot '{}'...", name);
 
     // Create snapshot directory and metadata
     let snapshot = Snapshot::create(name, command.to_vec())?;
@@ -91,49 +100,57 @@ fn cmd_snapshot_create(name: &str, command: &[String]) -> Result<(), Box<dyn std
     fs::create_dir_all(&images_dir)?;
 
     // Spawn the user's command
-    println!("Running: {}", command.join(" "));
     let mut child = Command::new(&command[0])
         .args(&command[1..])
         .stdin(Stdio::null())
         .spawn()?;
 
     let pid = child.id();
-    println!("Process started with PID: {}", pid);
 
     // Wait for process to be ready
-    // TODO: Add proper signaling mechanism (e.g., wait for specific output or signal)
-    println!("Waiting for process to initialize...");
-    std::thread::sleep(std::time::Duration::from_secs(5));
-
-    // Suspend CUDA state (if applicable)
-    println!("Suspending CUDA state...");
-    if let Err(e) = CudaCheckpoint::toggle(pid) {
-        eprintln!(
-            "Warning: cuda-checkpoint failed (may not be available): {}",
-            e
-        );
+    match wait {
+        Some(seconds) => {
+            std::thread::sleep(Duration::from_secs(seconds));
+        }
+        None => {
+            wait_for_signal()?;
+        }
     }
 
+    // Suspend CUDA state
+    CudaCheckpoint::toggle(pid)?;
+
     // Checkpoint the process with CRIU
-    println!("Checkpointing process...");
     let criu = Criu::new(&images_dir);
     criu.checkpoint(pid)?;
 
     // Process is killed by CRIU after checkpoint
     let _ = child.wait();
 
-    println!("Snapshot '{}' created successfully", name);
-    println!("Location: {}", snapshot.path.display());
+    println!("Snapshot '{}' created", name);
 
     Ok(())
+}
+
+/// Wait for SIGUSR1 signal from child process
+fn wait_for_signal() -> Result<(), Box<dyn std::error::Error>> {
+    let mut signals = Signals::new([SIGUSR1])?;
+
+    // Block until we receive SIGUSR1
+    for signal in signals.forever() {
+        if signal == SIGUSR1 {
+            return Ok(());
+        }
+    }
+
+    Err("Signal handler terminated unexpectedly".into())
 }
 
 fn cmd_snapshot_list() -> Result<(), Box<dyn std::error::Error>> {
     let snapshots = Snapshot::list()?;
 
     if snapshots.is_empty() {
-        println!("No snapshots found");
-        println!("Create one with: kryo snapshot create --name <name> -- <command>");
+        println!("No snapshots");
         return Ok(());
     }
 
@@ -181,11 +198,7 @@ fn cmd_snapshot_delete(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_run(snapshot_name: &str, command: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if command.is_empty() {
-        return Err("No command provided".into());
-    }
-
+fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = Snapshot::load(snapshot_name)?;
     let images_dir = snapshot.images_dir();
 
@@ -193,26 +206,48 @@ fn cmd_run(snapshot_name: &str, command: &[String]) -> Result<(), Box<dyn std::e
         return Err(format!("Snapshot '{}' has no checkpoint images", snapshot_name).into());
     }
 
-    println!("Restoring from snapshot '{}'...", snapshot_name);
-
-    // Restore the process with CRIU
+    // Restore the process with CRIU (detached mode)
     let criu = Criu::new(&images_dir);
-    criu.restore()?;
+    let pid = criu.restore_detached()?;
 
     // Resume CUDA state
-    // Note: After restore, we need the PID of the restored process
-    // This is simplified - real implementation needs to get PID from CRIU
-    println!("Resuming CUDA state...");
+    CudaCheckpoint::toggle(pid)?;
 
-    // Execute the user's command in the restored environment
-    println!("Running: {}", command.join(" "));
-    let status = Command::new(&command[0])
-        .args(&command[1..])
-        .env("KRYO_RESTORED", "1")
-        .env("KRYO_SNAPSHOT", snapshot_name)
-        .status()?;
+    // Wake up the restored process
+    send_signal(pid, libc::SIGUSR2)?;
 
-    std::process::exit(status.code().unwrap_or(1));
+    // Wait for the restored process to complete
+    wait_for_process(pid)?;
+
+    Ok(())
+}
+
+/// Send a signal to a process
+fn send_signal(pid: u32, signal: i32) -> Result<(), Box<dyn std::error::Error>> {
+    let result = unsafe { libc::kill(pid as i32, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!("Failed to send signal {} to PID {}", signal, pid).into())
+    }
+}
+
+/// Wait for a process to exit
+fn wait_for_process(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
+    let mut status: i32 = 0;
+    let result = unsafe { libc::waitpid(pid as i32, &mut status, 0) };
+    if result == -1 {
+        // Process might not be a child, try polling
+        loop {
+            let kill_result = unsafe { libc::kill(pid as i32, 0) };
+            if kill_result == -1 {
+                // Process no longer exists
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    Ok(())
 }
 
 /// Calculate directory size recursively

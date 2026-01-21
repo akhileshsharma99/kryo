@@ -1,10 +1,14 @@
 [project]
 name = "qwen"
 version = "0.1.0"
-description = "Add your description here"
+description = "Qwen example with Kryo checkpointing"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "kryo",
     "torch>=2.8.0",
     "transformers>=4.57.6",
 ]
+
+[tool.uv.sources]
+kryo = { path = "../../../python" }
