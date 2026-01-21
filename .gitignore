@@ -22,3 +22,30 @@ target
 
 # VS Code Local History extension
 .lh/
+
+# Claude AI local settings
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Environment variables
+.env
+
+# UV
+.uv/
+
+.mypy_cache/
+.mypy_temp/
+.ruff_cache/
+
+# Benchmark caches (results and graphs are tracked)
+benchmarks/.mypy_cache/
+benchmarks/.ruff_cache/
