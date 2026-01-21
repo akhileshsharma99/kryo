@@ -1,0 +1,41 @@
+name: Check Changes
+description: Check if files changed in a given path
+
+inputs:
+  path:
+    description: Path to check for changes
+    required: true
+
+outputs:
+  changed:
+    description: Whether files changed in the path (true/false)
+    value: ${{ steps.check.outputs.changed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check for changes
+      id: check
+      shell: bash
+      run: |
+        # Fetch base branch for comparison
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          git fetch origin ${{ github.base_ref }} --depth=1
+          BASE="origin/${{ github.base_ref }}"
+        else
+          # For push events, compare against parent commit
+          git fetch origin ${{ github.ref_name }} --depth=2
+          BASE="HEAD~1"
+        fi
+
+        # Check if any files changed in the path
+        CHANGED=$(git diff --name-only "$BASE"...HEAD -- "${{ inputs.path }}" 2>/dev/null || git diff --name-only "$BASE" HEAD -- "${{ inputs.path }}")
+
+        if [ -z "$CHANGED" ]; then
+          echo "No changes in ${{ inputs.path }}"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "Changes detected in ${{ inputs.path }}:"
+          echo "$CHANGED"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
