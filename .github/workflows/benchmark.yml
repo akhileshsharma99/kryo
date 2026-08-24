@@ -1,0 +1,45 @@
+name: GPU Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Timed runs per scenario per mode (plus one warmup)
+        required: false
+        default: "10"
+      gpu:
+        description: Lambda instance type (auto, gpu_1x_a10, gpu_1x_h100, ...)
+        required: false
+        default: "auto"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-benchmark
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    name: Lambda GPU
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run benchmarks
+        env:
+          LAMBDA_API_KEY: ${{ secrets.LAMBDA_API_KEY }}
+        run: |
+          python3 ci/benchmark/run.py \
+            --runs "${{ inputs.runs }}" \
+            --gpu "${{ inputs.gpu }}" \
+            --output benchmarks/results/latest.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmarks/results/latest.json
+          if-no-files-found: ignore

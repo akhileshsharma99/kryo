@@ -33,11 +33,11 @@ jobs:
         with:
           working-directory: benchmarks
 
-  cloud-benchmark-runner:
-    name: Cloud Benchmark Runner
+  lambda-benchmark:
+    name: Lambda Benchmark
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./ci/actions/python-lint
         with:
-          working-directory: ci/benchmark-runner
+          working-directory: ci/benchmark
