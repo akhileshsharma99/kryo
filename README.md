@@ -46,28 +46,37 @@ This makes serverless difficult and requires keeping instances warm to avoid sta
 
 ## The Solution
 
-Checkpoint your process after setup. Restore in milliseconds.
+Initialize once. Restore when the application starts.
 
 ```python
 # app.py
 import kryo
 
-model = load_model()      # Heavy setup
+model = load_model()
 model.to("cuda")
-kryo.checkpoint()         # Freeze here
+warm_up(model)
 
-result = model(input)     # Runs after restore
+kryo.checkpoint()  # Snapshot creation stops here
+
+serve(model)       # Production starts here after restore
 ```
 
-```bash
-# Create snapshot (runs setup, freezes at checkpoint)
-kryo snapshot create --name llm -- python app.py
+1. **Create a snapshot during deployment.** This runs setup through
+   `kryo.checkpoint()` and then saves the process.
 
-# Restore and run (skips setup, continues from checkpoint)
+```bash
+kryo snapshot create --name llm -- python app.py
+```
+
+2. **Restore when starting the production process.** Execution resumes after
+   `kryo.checkpoint()` with the initialized model in memory.
+
+```bash
 kryo run --snapshot llm
 ```
 
-> **~100ms** restore instead of **5-11s** cold start
+3. **Recreate the snapshot** when the code, model, dependencies, or runtime
+   environment changes.
 
 ## How It Works
 
