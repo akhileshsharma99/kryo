@@ -6,7 +6,7 @@
 
 *pronounced 'cry-oh'*
 
-[![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org/) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
 
@@ -125,8 +125,8 @@ cargo install kryo
 Kryo works with any language on Linux with CUDA. Your code needs to signal when setup is complete:
 
 - **Python**: Use the `kryo` package (`pip install kryo`)
-- **Other languages**: Send `SIGUSR1` to parent when ready, handle `SIGUSR2` to wake after restore
-- **Can't modify code?**: Use `--wait` to checkpoint after a fixed delay
+- **Other languages**: Block `SIGUSR2`, signal the PID in `KRYO_CLI_PID` with `SIGUSR1`, then wait for `SIGUSR2`
+- **Can't modify code?**: Use `--wait` with the CUDA process as the direct command
 
 ### Create a snapshot
 

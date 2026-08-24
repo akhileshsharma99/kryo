@@ -228,6 +228,14 @@ name = "kryo"
 version = "0.1.0"
 source = { directory = "../../../python" }
 
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.19.1" },
+    { name = "ruff", specifier = ">=0.16.4" },
+]
+
 [[package]]
 name = "markupsafe"
 version = "3.0.3"

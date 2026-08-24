@@ -12,6 +12,8 @@ pub struct SnapshotMetadata {
     pub name: String,
     pub created_at: DateTime<Utc>,
     pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_pid: Option<u32>,
 }
 
 /// A Kryo snapshot
@@ -45,13 +47,29 @@ impl Snapshot {
             name: name.to_string(),
             created_at: Utc::now(),
             command,
+            workload_pid: None,
         };
 
         let metadata_path = path.join("metadata.json");
-        let file = fs::File::create(&metadata_path)?;
-        serde_json::to_writer_pretty(file, &metadata)?;
+        if let Err(error) = (|| -> Result<()> {
+            let file = fs::File::create(&metadata_path)?;
+            serde_json::to_writer_pretty(file, &metadata)?;
+            Ok(())
+        })() {
+            let _ = fs::remove_dir_all(&path);
+            return Err(error);
+        }
 
         Ok(Self { path, metadata })
+    }
+
+    /// Record the process that owns the CUDA context and waits for restore.
+    pub fn set_workload_pid(&mut self, pid: u32) -> Result<()> {
+        self.metadata.workload_pid = Some(pid);
+        let metadata_path = self.path.join("metadata.json");
+        let file = fs::File::create(metadata_path)?;
+        serde_json::to_writer_pretty(file, &self.metadata)?;
+        Ok(())
     }
 
     /// Load an existing snapshot by name
@@ -146,6 +164,7 @@ mod tests {
             name: "test-snapshot".to_string(),
             created_at: Utc::now(),
             command: vec!["python".to_string(), "test.py".to_string()],
+            workload_pid: None,
         };
 
         let metadata_path = snapshot_path.join("metadata.json");
@@ -158,6 +177,7 @@ mod tests {
 
         assert_eq!(loaded.name, "test-snapshot");
         assert_eq!(loaded.command, vec!["python", "test.py"]);
+        assert_eq!(loaded.workload_pid, None);
 
         cleanup(&base_dir);
     }
@@ -173,6 +193,7 @@ mod tests {
                 "python".to_string(),
                 "app.py".to_string(),
             ],
+            workload_pid: Some(1234),
         };
 
         let json = serde_json::to_string(&metadata).unwrap();
@@ -180,6 +201,7 @@ mod tests {
 
         assert_eq!(deserialized.name, metadata.name);
         assert_eq!(deserialized.command, metadata.command);
+        assert_eq!(deserialized.workload_pid, Some(1234));
     }
 
     #[test]
@@ -190,6 +212,7 @@ mod tests {
                 name: "test".to_string(),
                 created_at: Utc::now(),
                 command: vec![],
+                workload_pid: None,
             },
         };
 

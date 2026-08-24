@@ -1,10 +1,14 @@
 use clap::{Parser, Subcommand};
 use kryo::{Criu, CudaCheckpoint, Snapshot};
-use signal_hook::consts::SIGUSR1;
-use signal_hook::iterator::Signals;
+use signal_hook::consts::{SIGINT, SIGTERM, SIGUSR1};
+use signal_hook::iterator::SignalsInfo;
+use signal_hook::iterator::exfiltrator::WithOrigin;
 use std::fs;
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+const KRYO_CLI_PID_ENV: &str = "KRYO_CLI_PID";
 
 #[derive(Parser)]
 #[command(name = "kryo")]
@@ -38,7 +42,7 @@ enum SnapshotCommands {
         #[arg(long)]
         name: String,
 
-        /// Wait time in seconds before checkpointing (default: wait for SIGUSR1 signal)
+        /// Wait before checkpointing the direct command (default: wait for SIGUSR1)
         #[arg(long)]
         wait: Option<u64>,
 
@@ -92,58 +96,167 @@ fn cmd_snapshot_create(
         return Err("No command provided".into());
     }
 
-    // Create snapshot directory and metadata
-    let snapshot = Snapshot::create(name, command.to_vec())?;
+    let mut snapshot = Snapshot::create(name, command.to_vec())?;
+    let result = create_snapshot(&mut snapshot, wait, command);
 
-    // Create images directory for CRIU
-    let images_dir = snapshot.images_dir();
-    fs::create_dir_all(&images_dir)?;
-
-    // Spawn the user's command
-    let mut child = Command::new(&command[0])
-        .args(&command[1..])
-        .stdin(Stdio::null())
-        .spawn()?;
-
-    let pid = child.id();
-
-    // Wait for process to be ready
-    match wait {
-        Some(seconds) => {
-            std::thread::sleep(Duration::from_secs(seconds));
-        }
-        None => {
-            wait_for_signal()?;
+    if result.is_err() {
+        if let Err(cleanup_error) = Snapshot::delete(name) {
+            eprintln!(
+                "Warning: failed to remove incomplete snapshot '{}': {}",
+                name, cleanup_error
+            );
         }
     }
 
-    // Suspend CUDA state
-    CudaCheckpoint::toggle(pid)?;
-
-    // Checkpoint the process with CRIU
-    let criu = Criu::new(&images_dir);
-    criu.checkpoint(pid)?;
-
-    // Process is killed by CRIU after checkpoint
-    let _ = child.wait();
-
+    result?;
     println!("Snapshot '{}' created", name);
+    Ok(())
+}
+
+fn create_snapshot(
+    snapshot: &mut Snapshot,
+    wait: Option<u64>,
+    command: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let images_dir = snapshot.images_dir();
+    fs::create_dir_all(&images_dir)?;
+
+    // Register before spawning so a fast workload cannot signal before the
+    // handler is ready.
+    let mut signals = SignalsInfo::<WithOrigin>::new([SIGUSR1, SIGINT, SIGTERM])?;
+
+    let child = Command::new(&command[0])
+        .args(&command[1..])
+        .stdin(Stdio::null())
+        .env(KRYO_CLI_PID_ENV, std::process::id().to_string())
+        .process_group(0)
+        .spawn()?;
+    let mut child = ChildGuard::new(child);
+    let root_pid = child.id();
+
+    let workload_pid = match wait {
+        Some(seconds) => wait_for_duration(
+            child.child_mut(),
+            &mut signals,
+            root_pid,
+            Duration::from_secs(seconds),
+        )?
+        .unwrap_or(root_pid),
+        None => wait_for_signal(child.child_mut(), &mut signals, root_pid)?,
+    };
+
+    snapshot.set_workload_pid(workload_pid)?;
+
+    check_for_interruption(&mut signals)?;
+    CudaCheckpoint::toggle(workload_pid)?;
+    child.mark_cuda_suspended(workload_pid);
+    check_for_interruption(&mut signals)?;
+
+    let criu = Criu::new(&images_dir);
+    criu.checkpoint(root_pid)?;
+
+    // CRIU killed the process tree and captured the suspended CUDA state.
+    child.mark_checkpointed();
+    check_for_interruption(&mut signals)?;
+    let _ = child.child_mut().wait();
+    check_for_interruption(&mut signals)?;
+    child.disarm();
 
     Ok(())
 }
 
-/// Wait for SIGUSR1 signal from child process
-fn wait_for_signal() -> Result<(), Box<dyn std::error::Error>> {
-    let mut signals = Signals::new([SIGUSR1])?;
+/// Wait for SIGUSR1 and return the PID of the process that sent it.
+fn wait_for_signal(
+    child: &mut Child,
+    signals: &mut SignalsInfo<WithOrigin>,
+    process_group: u32,
+) -> Result<u32, Box<dyn std::error::Error>> {
+    loop {
+        for origin in signals.pending() {
+            match origin.signal {
+                SIGUSR1 => {
+                    if let Some(pid) = valid_workload_sender(&origin, process_group)? {
+                        return Ok(pid);
+                    }
+                }
+                SIGINT | SIGTERM => return Err("Snapshot creation interrupted".into()),
+                _ => {}
+            }
+        }
 
-    // Block until we receive SIGUSR1
-    for signal in signals.forever() {
-        if signal == SIGUSR1 {
-            return Ok(());
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("Command exited before checkpointing ({status})").into());
+        }
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_for_duration(
+    child: &mut Child,
+    signals: &mut SignalsInfo<WithOrigin>,
+    process_group: u32,
+    duration: Duration,
+) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + duration;
+    let mut workload_pid = None;
+    loop {
+        for origin in signals.pending() {
+            match origin.signal {
+                SIGUSR1 => {
+                    if let Some(pid) = valid_workload_sender(&origin, process_group)? {
+                        workload_pid = Some(pid);
+                    }
+                }
+                SIGINT | SIGTERM => return Err("Snapshot creation interrupted".into()),
+                _ => {}
+            }
+        }
+
+        if let Some(status) = child.try_wait()? {
+            return Err(format!("Command exited before checkpointing ({status})").into());
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(workload_pid);
+        }
+
+        std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+    }
+}
+
+fn check_for_interruption(
+    signals: &mut SignalsInfo<WithOrigin>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for origin in signals.pending() {
+        if matches!(origin.signal, SIGINT | SIGTERM) {
+            return Err("Snapshot creation interrupted".into());
         }
     }
+    Ok(())
+}
 
-    Err("Signal handler terminated unexpectedly".into())
+fn valid_workload_sender(
+    origin: &signal_hook::low_level::siginfo::Origin,
+    process_group: u32,
+) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    let Some(process) = origin.process else {
+        return Err("Checkpoint signal did not include a sender PID".into());
+    };
+    let pid = u32::try_from(process.pid)
+        .map_err(|_| format!("Invalid checkpoint signal PID: {}", process.pid))?;
+    let pid_i32 =
+        i32::try_from(pid).map_err(|_| format!("Invalid checkpoint signal PID: {pid}"))?;
+    let expected_group = i32::try_from(process_group)
+        .map_err(|_| format!("Invalid workload process group: {process_group}"))?;
+    let actual_group = unsafe { libc::getpgid(pid_i32) };
+
+    if actual_group == expected_group {
+        Ok(Some(pid))
+    } else {
+        Ok(None)
+    }
 }
 
 fn cmd_snapshot_list() -> Result<(), Box<dyn std::error::Error>> {
@@ -208,18 +321,75 @@ fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     // Restore the process with CRIU (detached mode)
     let criu = Criu::new(&images_dir);
-    let pid = criu.restore_detached()?;
+    let root_pid = criu.restore_detached()?;
+    let workload_pid = snapshot.metadata.workload_pid.unwrap_or(root_pid);
 
     // Resume CUDA state
-    CudaCheckpoint::toggle(pid)?;
+    CudaCheckpoint::toggle(workload_pid)?;
 
     // Wake up the restored process
-    send_signal(pid, libc::SIGUSR2)?;
+    send_signal(workload_pid, libc::SIGUSR2)?;
 
     // Wait for the restored process to complete
-    wait_for_process(pid)?;
+    wait_for_process(root_pid)?;
 
     Ok(())
+}
+
+struct ChildGuard {
+    child: Child,
+    suspended_cuda_pid: Option<u32>,
+    armed: bool,
+}
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self {
+            child,
+            suspended_cuda_pid: None,
+            armed: true,
+        }
+    }
+
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    fn mark_cuda_suspended(&mut self, pid: u32) {
+        self.suspended_cuda_pid = Some(pid);
+    }
+
+    fn mark_checkpointed(&mut self) {
+        self.suspended_cuda_pid = None;
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        if let Some(pid) = self.suspended_cuda_pid {
+            let _ = CudaCheckpoint::toggle(pid);
+        }
+
+        if let Ok(process_group) = i32::try_from(self.child.id()) {
+            // The workload is started in its own process group so wrappers and
+            // their descendants are cleaned up together.
+            let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// Send a signal to a process
@@ -281,5 +451,52 @@ fn format_size(bytes: u64) -> String {
         format!("{:.2} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} bytes", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static SIGNAL_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn wait_for_signal_returns_sender_pid() {
+        let _lock = SIGNAL_TEST_LOCK.lock().unwrap();
+        let mut signals = SignalsInfo::<WithOrigin>::new([SIGUSR1, SIGINT, SIGTERM]).unwrap();
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "sh -c 'kill -USR1 \"$KRYO_CLI_PID\"; sleep 10' & wait",
+            ])
+            .env(KRYO_CLI_PID_ENV, std::process::id().to_string())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let process_group = child.id();
+
+        let sender_pid = wait_for_signal(&mut child, &mut signals, process_group).unwrap();
+
+        assert_ne!(sender_pid, process_group);
+        let _ = unsafe { libc::kill(-(process_group as i32), libc::SIGKILL) };
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn wait_for_signal_reports_early_child_exit() {
+        let _lock = SIGNAL_TEST_LOCK.lock().unwrap();
+        let mut signals = SignalsInfo::<WithOrigin>::new([SIGUSR1, SIGINT, SIGTERM]).unwrap();
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 7"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let process_group = child.id();
+
+        let error = wait_for_signal(&mut child, &mut signals, process_group).unwrap_err();
+
+        assert!(error.to_string().contains("exited before checkpointing"));
     }
 }
