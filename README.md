@@ -119,27 +119,21 @@ sequenceDiagram
 
 ## Installation
 
-Linux (x86_64 or arm64). Downloads the latest release binary to `/usr/local/bin`:
+**1. Kryo CLI** (Linux x86_64 or arm64):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
 ```
 
-Override the install location with `INSTALL_DIR` (for example `INSTALL_DIR="$HOME/.local/bin"`).
+This installs to `/usr/local/bin`. Use `INSTALL_DIR="$HOME/.local/bin"` to put it somewhere else. To build from source instead: `cargo install --git https://github.com/akhileshsharma99/kryo`.
 
-Build from source:
-
-```bash
-cargo install --git https://github.com/akhileshsharma99/kryo
-```
-
-Python SDK:
+**2. Python package** (if your app is Python):
 
 ```bash
 pip install kryo
 ```
 
-CRIU (Ubuntu):
+**3. CRIU** (Ubuntu):
 
 ```bash
 sudo add-apt-repository -y ppa:criu/ppa
@@ -147,7 +141,11 @@ sudo apt-get update
 sudo apt-get install -y criu
 ```
 
-[cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) must be on `PATH` as `cuda-checkpoint`. Snapshot create and restore need root (or `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE`).
+See the [CRIU install docs](https://criu.org/Installation) for other distros.
+
+**4. cuda-checkpoint** — build [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) and put the `cuda-checkpoint` binary on your `PATH`.
+
+Create and restore need to run as root (or with `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE`).
 
 ## Limitations
 
