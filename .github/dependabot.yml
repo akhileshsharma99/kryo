@@ -12,3 +12,15 @@ updates:
     directory: /python
     schedule:
       interval: weekly
+  - package-ecosystem: uv
+    directory: /benchmarks
+    schedule:
+      interval: weekly
+  - package-ecosystem: uv
+    directory: /ci/benchmark-runner
+    schedule:
+      interval: weekly
+  - package-ecosystem: uv
+    directory: /examples/python/qwen
+    schedule:
+      interval: weekly
