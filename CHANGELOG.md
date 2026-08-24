@@ -7,6 +7,3 @@
 
 * add GPU process checkpoint and restore workflow ([#2](https://github.com/akhileshsharma99/kryo/issues/2)) ([0988eeb](https://github.com/akhileshsharma99/kryo/commit/0988eebb15c4e041d4dd86d1e0af9bee00b94f88))
 * **benchmarks:** add cold start benchmark suite ([3582a34](https://github.com/akhileshsharma99/kryo/commit/3582a3436712ba2190db79eb2a8ccc00e9674ebc))
-* **benchmarks:** add cold start benchmark suite ([706ce8c](https://github.com/akhileshsharma99/kryo/commit/706ce8c1cf381231c717c99c8b1bf816750ea377))
-
-## Changelog
