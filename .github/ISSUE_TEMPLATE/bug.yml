@@ -4,7 +4,7 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: Search existing issues first. Do not report security issues here — use a GitHub security advisory.
+      value: Search existing issues first. Do not report security issues here; use a GitHub security advisory.
   - type: textarea
     id: what
     attributes:

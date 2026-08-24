@@ -119,7 +119,7 @@ sequenceDiagram
 
 ## Installation
 
-Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optional — only if you want `kryo.checkpoint()` in Python. Other languages use signals or `--wait` (see [Usage](#usage)).
+Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optional: only if you want `kryo.checkpoint()` in Python. Other languages use signals or `--wait` (see [Usage](#usage)).
 
 `kryo snapshot create` and `kryo run` must be run as root (`sudo`). CRIU has to freeze and restore another process, which Linux does not allow for a normal user.
 
@@ -151,7 +151,7 @@ sudo apt-get install -y criu
 
 Other distros: [CRIU install docs](https://criu.org/Installation).
 
-**cuda-checkpoint** — build [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) and put `cuda-checkpoint` on your `PATH`.
+**cuda-checkpoint:** build [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) and put `cuda-checkpoint` on your `PATH`.
 
 **Python package** (optional):
 
@@ -161,15 +161,15 @@ pip install kryo
 
 ## Limitations
 
-Alpha. Linux + NVIDIA only. Recreate the snapshot when the code, model, CUDA toolkit, or NVIDIA driver changes — restored processes are not portable across machines or driver versions.
+Alpha. Linux + NVIDIA only. Recreate the snapshot when the code, model, CUDA toolkit, or NVIDIA driver changes. Restored processes are not portable across machines or driver versions.
 
 ## Usage
 
 After setup, tell Kryo the process is ready to snapshot:
 
-- **Python** — `import kryo` then `kryo.checkpoint()` (needs the optional package above)
-- **Any other language** — block `SIGUSR2`, send `SIGUSR1` to the PID in `KRYO_CLI_PID`, then wait for `SIGUSR2`
-- **Can't change the program** — skip signaling and use `--wait` so Kryo snapshots after N seconds
+- **Python:** `import kryo` then `kryo.checkpoint()` (needs the optional package above)
+- **Any other language:** block `SIGUSR2`, send `SIGUSR1` to the PID in `KRYO_CLI_PID`, then wait for `SIGUSR2`
+- **Can't change the program:** skip signaling and use `--wait` so Kryo snapshots after N seconds
 
 ### Create a snapshot
 
@@ -227,9 +227,9 @@ Baseline measurements on NVIDIA H100:
 ![Cold Start Phase Breakdown](benchmarks/graphs/phase_breakdown.png)
 
 **Key findings:**
-- **Import time dominates** — PyTorch 1.8s, transformers adds 3-4s
-- **CUDA init is fixed** — ~0.9s unavoidable tax
-- **Model loading varies** — 0.13s (YOLO) to 4.7s (Jina)
+- **Import time dominates:** PyTorch 1.8s, transformers adds 3-4s
+- **CUDA init is fixed:** ~0.9s unavoidable tax
+- **Model loading varies:** 0.13s (YOLO) to 4.7s (Jina)
 
 See [benchmarks/](benchmarks/) for methodology.
 
