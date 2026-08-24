@@ -30,16 +30,4 @@ This repo uses [Conventional Commits](https://www.conventionalcommits.org/). PR 
 - `feat!:` / `BREAKING CHANGE:` major bump
 - `docs:`, `ci:`, `chore:` do not release
 
-One version is shared across `Cargo.toml` and every `pyproject.toml`. Do not bump versions by hand; merge the release-please PR instead.
-
-## Release publishing
-
-On each GitHub release the workflow uploads Linux binaries, then publishes the crate to crates.io and the Python package to PyPI.
-
-You need:
-
-1. crates.io [trusted publishing](https://crates.io/docs/trusted-publishing) on the `kryo` crate: GitHub repo `akhileshsharma99/kryo`, workflow `release.yml`
-2. PyPI [trusted publisher](https://docs.pypi.org/trusted-publishers/) for `akhileshsharma99/kryo`, workflow `release.yml`
-3. GitHub Actions allowed to create pull requests (Settings → Actions → General) so release-please can open the Release PR
-
-crates.io requires the crate to exist before you can attach a trusted publisher. Publish `0.1.0` once from your laptop (`cargo publish`), then add the GitHub publisher on the crate settings page. After that, CI owns later versions.
+One version is shared across `Cargo.toml` and every `pyproject.toml`. Do not bump versions by hand.
