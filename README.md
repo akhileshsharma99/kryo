@@ -21,6 +21,7 @@
   - [How It Works](#how-it-works)
   - [Requirements](#requirements)
   - [Installation](#installation)
+  - [Limitations](#limitations)
   - [Usage](#usage)
     - [Create a snapshot](#create-a-snapshot)
     - [Restore and run](#restore-and-run)
@@ -28,6 +29,7 @@
     - [Other](#other)
     - [Examples](#examples)
   - [Benchmarks](#benchmarks)
+  - [Contributing](#contributing)
 
 ---
 
@@ -110,38 +112,73 @@ sequenceDiagram
 
 ## Requirements
 
-- **Linux** — CRIU is Linux-only
-- **NVIDIA driver 550+** — for cuda-checkpoint
-- **[CRIU](https://criu.org/Installation)** — installed and available in PATH
+- Linux
+- NVIDIA driver 550+
+- [CRIU](https://criu.org/)
+- [cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint)
 
 ## Installation
 
+Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optional: only if you want `kryo.checkpoint()` in Python. Other languages use signals or `--wait` (see [Usage](#usage)).
+
+`kryo snapshot create` and `kryo run` must be run as root (`sudo`). CRIU has to freeze and restore another process, which Linux does not allow for a normal user.
+
+**Kryo CLI** (Linux x86_64 or arm64):
+
 ```bash
-cargo install kryo
+curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
 ```
+
+Or build from source:
+
+```bash
+cargo install --git https://github.com/akhileshsharma99/kryo
+``` 
+
+**CRIU** (Ubuntu):
+
+```bash
+sudo add-apt-repository -y ppa:criu/ppa
+sudo apt-get update
+sudo apt-get install -y criu
+```
+
+Other distros: [CRIU install docs](https://criu.org/Installation).
+
+**cuda-checkpoint:** build [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) and put `cuda-checkpoint` on your `PATH`.
+
+**Python package** (optional):
+
+```bash
+pip install kryo
+```
+
+## Limitations
+
+Alpha. Linux + NVIDIA only. Recreate the snapshot when the code, model, CUDA toolkit, or NVIDIA driver changes. Restored processes are not portable across machines or driver versions.
 
 ## Usage
 
-Kryo works with any language on Linux with CUDA. Your code needs to signal when setup is complete:
+After setup, tell Kryo the process is ready to snapshot:
 
-- **Python**: Use the `kryo` package (`pip install kryo`)
-- **Other languages**: Block `SIGUSR2`, signal the PID in `KRYO_CLI_PID` with `SIGUSR1`, then wait for `SIGUSR2`
-- **Can't modify code?**: Use `--wait` with the CUDA process as the direct command
+- **Python:** `import kryo` then `kryo.checkpoint()` (needs the optional package above)
+- **Any other language:** block `SIGUSR2`, send `SIGUSR1` to the PID in `KRYO_CLI_PID`, then wait for `SIGUSR2`
+- **Can't change the program:** skip signaling and use `--wait` so Kryo snapshots after N seconds
 
 ### Create a snapshot
 
 ```bash
 # Signal-based (default) - your code calls kryo.checkpoint()
-kryo snapshot create --name <name> -- <command>
+sudo kryo snapshot create --name <name> -- <command>
 
 # Timer-based - checkpoint after N seconds (for code you can't modify)
-kryo snapshot create --name <name> --wait 30 -- <command>
+sudo kryo snapshot create --name <name> --wait 30 -- <command>
 ```
 
 ### Restore and run
 
 ```bash
-kryo run --snapshot <name>
+sudo kryo run --snapshot <name>
 ```
 
 ### Manage snapshots
@@ -167,10 +204,10 @@ cd examples/python/qwen
 uv sync
 
 # Create snapshot (runs setup, freezes at kryo.checkpoint())
-kryo snapshot create --name qwen -- uv run python qwen.py
+sudo kryo snapshot create --name qwen -- uv run python qwen.py
 
 # Restore and run (sub-second cold start)
-kryo run --snapshot qwen
+sudo kryo run --snapshot qwen
 ```
 
 See [examples/](examples/) for more.
@@ -184,8 +221,12 @@ Baseline measurements on NVIDIA H100:
 ![Cold Start Phase Breakdown](benchmarks/graphs/phase_breakdown.png)
 
 **Key findings:**
-- **Import time dominates** — PyTorch 1.8s, transformers adds 3-4s
-- **CUDA init is fixed** — ~0.9s unavoidable tax
-- **Model loading varies** — 0.13s (YOLO) to 4.7s (Jina)
+- **Import time dominates:** PyTorch 1.8s, transformers adds 3-4s
+- **CUDA init is fixed:** ~0.9s unavoidable tax
+- **Model loading varies:** 0.13s (YOLO) to 4.7s (Jina)
 
 See [benchmarks/](benchmarks/) for methodology.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities via [GitHub security advisories](https://github.com/akhileshsharma99/kryo/security/advisories/new), not public issues.

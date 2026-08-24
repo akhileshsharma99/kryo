@@ -1,0 +1,41 @@
+name: Bug report
+description: Something is broken
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Search existing issues first. Do not report security issues here; use a GitHub security advisory.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected vs what you got. Include the full command and error.
+    validations:
+      required: true
+  - type: input
+    id: kryo-version
+    attributes:
+      label: Kryo version
+      placeholder: kryo --version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS / kernel
+      placeholder: Ubuntu 24.04, 6.8.x
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and NVIDIA driver
+      placeholder: H100, driver 550.x
+  - type: input
+    id: criu
+    attributes:
+      label: CRIU version
+      placeholder: criu --version
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: Smallest command or snippet that fails.
