@@ -116,8 +116,18 @@ sequenceDiagram
 
 ## Installation
 
+Linux (x86_64 or arm64). Downloads the latest release binary to `/usr/local/bin`:
+
 ```bash
-cargo install kryo
+curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
+```
+
+Override the install location with `INSTALL_DIR` (for example `INSTALL_DIR="$HOME/.local/bin"`).
+
+Build from source:
+
+```bash
+cargo install --git https://github.com/akhileshsharma99/kryo
 ```
 
 ## Usage

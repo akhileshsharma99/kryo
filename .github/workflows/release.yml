@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset: kryo-linux-x64
+          - target: aarch64-unknown-linux-gnu
+            asset: kryo-linux-arm64
+            linker: aarch64-linux-gnu-gcc
+            extra_apt: gcc-aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross linker
+        if: matrix.extra_apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.extra_apt }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        env:
+          RUSTFLAGS: "-C strip=symbols"
+        run: |
+          if [ -n "${{ matrix.linker }}" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${{ matrix.linker }}"
+          fi
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "target/${{ matrix.target }}/release/kryo" "${{ matrix.asset }}"
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" "${{ matrix.asset }}"
