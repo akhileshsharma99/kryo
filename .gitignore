@@ -49,3 +49,7 @@ dist/
 # Benchmark caches (results and graphs are tracked)
 benchmarks/.mypy_cache/
 benchmarks/.ruff_cache/
+
+# Added by cargo
+
+/target

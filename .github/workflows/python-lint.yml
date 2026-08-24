@@ -10,6 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  sdk:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./ci/actions/python-lint
+        id: lint
+        with:
+          working-directory: python
+      - name: Tests
+        if: steps.lint.outputs.skipped != 'true'
+        working-directory: python
+        run: uv run python -m unittest discover -s tests
+
   benchmarks:
     name: Benchmarks
     runs-on: ubuntu-latest
