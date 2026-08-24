@@ -21,6 +21,7 @@
   - [How It Works](#how-it-works)
   - [Requirements](#requirements)
   - [Installation](#installation)
+  - [Limitations](#limitations)
   - [Usage](#usage)
     - [Create a snapshot](#create-a-snapshot)
     - [Restore and run](#restore-and-run)
@@ -28,6 +29,7 @@
     - [Other](#other)
     - [Examples](#examples)
   - [Benchmarks](#benchmarks)
+  - [Contributing](#contributing)
 
 ---
 
@@ -112,7 +114,18 @@ sequenceDiagram
 
 - **Linux** — CRIU is Linux-only
 - **NVIDIA driver 550+** — for cuda-checkpoint
-- **[CRIU](https://criu.org/Installation)** — installed and available in PATH
+- **[CRIU](https://criu.org/Installation)** — on PATH. On Ubuntu:
+
+  ```bash
+  sudo add-apt-repository -y ppa:criu/ppa
+  sudo apt-get update
+  sudo apt-get install -y criu
+  ```
+
+- **[cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint)** — on PATH as `cuda-checkpoint` (build from that repo)
+- **Elevated privileges** — CRIU dump/restore usually needs root, or `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE` on the `kryo` binary
+
+This is not the Java [Kryo](https://github.com/EsotericSoftware/kryo) serializer.
 
 ## Installation
 
@@ -129,6 +142,16 @@ Build from source:
 ```bash
 cargo install --git https://github.com/akhileshsharma99/kryo
 ```
+
+Python SDK:
+
+```bash
+pip install kryo
+```
+
+## Limitations
+
+Alpha. Linux + NVIDIA only. Recreate the snapshot when the code, model, CUDA toolkit, or NVIDIA driver changes — restored processes are not portable across machines or driver versions.
 
 ## Usage
 
@@ -199,3 +222,7 @@ Baseline measurements on NVIDIA H100:
 - **Model loading varies** — 0.13s (YOLO) to 4.7s (Jina)
 
 See [benchmarks/](benchmarks/) for methodology.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities via [GitHub security advisories](https://github.com/akhileshsharma99/kryo/security/advisories/new), not public issues.

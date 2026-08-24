@@ -26,6 +26,8 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/akhileshsharma99/kryo"
 Repository = "https://github.com/akhileshsharma99/kryo"
+Issues = "https://github.com/akhileshsharma99/kryo/issues"
+Changelog = "https://github.com/akhileshsharma99/kryo/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]

@@ -6,6 +6,19 @@ rust-version = "1.85"
 description = "Sub-second cold starts for GPU inference"
 license = "MIT"
 repository = "https://github.com/akhileshsharma99/kryo"
+homepage = "https://github.com/akhileshsharma99/kryo"
+readme = "README.md"
+authors = ["Akhilesh Sharma <sharmaninenine@gmail.com>"]
+keywords = ["gpu", "inference", "checkpoint", "criu", "cuda"]
+categories = ["command-line-utilities"]
+include = [
+    "src/**",
+    "tests/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "LICENSE",
+    "README.md",
+]
 
 [lib]
 name = "kryo"
