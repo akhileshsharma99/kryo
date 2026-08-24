@@ -1,49 +1,29 @@
-"""Pre-download model weights for cold start benchmarking.
+"""Pre-download weights so timed runs do not include network I/O."""
 
-This ensures cold start benchmarks measure startup time, not download time.
-Run during image build: python download_models.py
-"""
+from pathlib import Path
 
-MODELS = {
-    "yolo": {
-        "download": lambda: __import__("ultralytics").YOLO("yolov8n.pt"),
-    },
-    "qwen3": {
-        "download": lambda: (
-            __import__("transformers").AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B"),
-            __import__("transformers").AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B"),
-        ),
-    },
-    "whisper": {
-        "download": lambda: (
-            __import__("transformers").WhisperProcessor.from_pretrained("openai/whisper-tiny"),
-            __import__("transformers").WhisperForConditionalGeneration.from_pretrained(
-                "openai/whisper-tiny"
-            ),
-        ),
-    },
-    "jina_embeddings": {
-        "download": lambda: (
-            __import__("transformers").AutoTokenizer.from_pretrained(
-                "jinaai/jina-embeddings-v3", trust_remote_code=True
-            ),
-            __import__("transformers").AutoModel.from_pretrained(
-                "jinaai/jina-embeddings-v3", trust_remote_code=True
-            ),
-        ),
-    },
-}
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    WhisperForConditionalGeneration,
+    WhisperProcessor,
+)
+from ultralytics import YOLO
+
+SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 
 
 def main() -> None:
-    """Download all model weights."""
-    for name, config in MODELS.items():
-        print(f"Downloading {name}...")
-        try:
-            config["download"]()
-            print(f"  {name}: OK")
-        except Exception as e:
-            print(f"  {name}: FAILED ({e})")
+    """Fetch YOLO, Qwen, and Whisper weights into the local cache."""
+    print("Downloading yolov8n...")
+    YOLO(str(SCENARIOS_DIR / "yolov8n.pt"))
+    print("Downloading Qwen/Qwen2.5-0.5B...")
+    AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B")
+    AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B")
+    print("Downloading openai/whisper-tiny...")
+    WhisperProcessor.from_pretrained("openai/whisper-tiny")
+    WhisperForConditionalGeneration.from_pretrained("openai/whisper-tiny")
+    print("Done")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,15 @@
-"""PyTorch + CUDA scenario."""
+"""PyTorch CUDA init + a small GPU matmul."""
 
-from _base import Timing, output_results
+import torch
+from _base import maybe_checkpoint
 
-with Timing("import"):
-    import torch
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available")
 
-with Timing("cuda_init"):
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available")
-    _ = torch.zeros(1, device="cuda")
+_ = torch.zeros(1, device="cuda")
+x = torch.randn(1000, 1000, device="cuda")
+y = x @ x.T
+torch.cuda.synchronize()
+del y
 
-with Timing("first_inference"):
-    x = torch.randn(1000, 1000, device="cuda")
-    y = x @ x.T
-    torch.cuda.synchronize()
-
-output_results()
+maybe_checkpoint()

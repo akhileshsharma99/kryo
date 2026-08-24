@@ -46,9 +46,11 @@ dist/
 .mypy_temp/
 .ruff_cache/
 
-# Benchmark caches (results and graphs are tracked)
+# Benchmark caches and generated timings
 benchmarks/.mypy_cache/
 benchmarks/.ruff_cache/
+benchmarks/results/*.json
+benchmarks/scenarios/*.pt
 
 # Added by cargo
 

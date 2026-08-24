@@ -214,18 +214,15 @@ See [examples/](examples/) for more.
 
 ## Benchmarks
 
-Baseline measurements on NVIDIA H100:
+Cold start vs Kryo restore on a real NVIDIA VM (not serverless). Same GPU, same driver, same commit.
 
-![Cold Start Benchmark Results](benchmarks/graphs/table.png)
+```bash
+cd benchmarks
+uv sync
+uv run python runner.py --all --runs 10
+```
 
-![Cold Start Phase Breakdown](benchmarks/graphs/phase_breakdown.png)
-
-**Key findings:**
-- **Import time dominates:** PyTorch 1.8s, transformers adds 3-4s
-- **CUDA init is fixed:** ~0.9s unavoidable tax
-- **Model loading varies:** 0.13s (YOLO) to 4.7s (Jina)
-
-See [benchmarks/](benchmarks/) for methodology.
+GitHub Actions can rent a Lambda Cloud GPU and run that comparison (`workflow_dispatch`). See [benchmarks/](benchmarks/) and [ci/benchmark/](ci/benchmark/).
 
 ## Contributing
 
