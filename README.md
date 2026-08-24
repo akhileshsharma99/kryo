@@ -119,21 +119,17 @@ sequenceDiagram
 
 ## Installation
 
-**1. Kryo CLI** (Linux x86_64 or arm64):
+Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optional — only if you want `kryo.checkpoint()` in Python. Other languages use signals or `--wait` (see [Usage](#usage)). Create and restore need root (or `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE`).
+
+**Kryo CLI** (Linux x86_64 or arm64):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
 ```
 
-This installs to `/usr/local/bin`. Use `INSTALL_DIR="$HOME/.local/bin"` to put it somewhere else. To build from source instead: `cargo install --git https://github.com/akhileshsharma99/kryo`.
+Installs to `/usr/local/bin`. To put it elsewhere: `INSTALL_DIR="$HOME/.local/bin"`. From source: `cargo install --git https://github.com/akhileshsharma99/kryo`.
 
-**2. Python package** (if your app is Python):
-
-```bash
-pip install kryo
-```
-
-**3. CRIU** (Ubuntu):
+**CRIU** (Ubuntu):
 
 ```bash
 sudo add-apt-repository -y ppa:criu/ppa
@@ -141,11 +137,15 @@ sudo apt-get update
 sudo apt-get install -y criu
 ```
 
-See the [CRIU install docs](https://criu.org/Installation) for other distros.
+Other distros: [CRIU install docs](https://criu.org/Installation).
 
-**4. cuda-checkpoint** — build [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) and put the `cuda-checkpoint` binary on your `PATH`.
+**cuda-checkpoint** — build [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) and put `cuda-checkpoint` on your `PATH`.
 
-Create and restore need to run as root (or with `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE`).
+**Python package** (optional):
+
+```bash
+pip install kryo
+```
 
 ## Limitations
 
@@ -153,11 +153,11 @@ Alpha. Linux + NVIDIA only. Recreate the snapshot when the code, model, CUDA too
 
 ## Usage
 
-Kryo works with any language on Linux with CUDA. Your code needs to signal when setup is complete:
+After setup, tell Kryo the process is ready to snapshot:
 
-- **Python**: Use the `kryo` package (`pip install kryo`)
-- **Other languages**: Block `SIGUSR2`, signal the PID in `KRYO_CLI_PID` with `SIGUSR1`, then wait for `SIGUSR2`
-- **Can't modify code?**: Use `--wait` with the CUDA process as the direct command
+- **Python** — `import kryo` then `kryo.checkpoint()` (needs the optional package above)
+- **Any other language** — block `SIGUSR2`, send `SIGUSR1` to the PID in `KRYO_CLI_PID`, then wait for `SIGUSR2`
+- **Can't change the program** — skip signaling and use `--wait` so Kryo snapshots after N seconds
 
 ### Create a snapshot
 
