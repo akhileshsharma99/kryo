@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Installs kryo to /usr/local/bin. Override with INSTALL_DIR, e.g.
+#   INSTALL_DIR="$HOME/.local/bin" curl -fsSL ... | sh
 set -euo pipefail
 
 REPO="akhileshsharma99/kryo"

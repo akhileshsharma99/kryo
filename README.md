@@ -129,13 +129,7 @@ Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optiona
 curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
 ```
 
-That installs to `/usr/local/bin`. To use another directory:
-
-```bash
-INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
-```
-
-Or build from source (`~/.cargo/bin`):
+Or build from source:
 
 ```bash
 cargo install --git https://github.com/akhileshsharma99/kryo
