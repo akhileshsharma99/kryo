@@ -119,7 +119,9 @@ sequenceDiagram
 
 ## Installation
 
-Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optional — only if you want `kryo.checkpoint()` in Python. Other languages use signals or `--wait` (see [Usage](#usage)). Create and restore need root (or `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE`).
+Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optional — only if you want `kryo.checkpoint()` in Python. Other languages use signals or `--wait` (see [Usage](#usage)).
+
+`kryo snapshot create` and `kryo run` must be run as root (`sudo`). CRIU has to freeze and restore another process, which Linux does not allow for a normal user.
 
 **Kryo CLI** (Linux x86_64 or arm64):
 
@@ -127,7 +129,17 @@ Always install the CLI, CRIU, and cuda-checkpoint. The Python package is optiona
 curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
 ```
 
-Installs to `/usr/local/bin`. To put it elsewhere: `INSTALL_DIR="$HOME/.local/bin"`. From source: `cargo install --git https://github.com/akhileshsharma99/kryo`.
+That installs to `/usr/local/bin`. To use another directory:
+
+```bash
+INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://raw.githubusercontent.com/akhileshsharma99/kryo/main/install.sh | sh
+```
+
+Or build from source (`~/.cargo/bin`):
+
+```bash
+cargo install --git https://github.com/akhileshsharma99/kryo
+``` 
 
 **CRIU** (Ubuntu):
 
@@ -163,16 +175,16 @@ After setup, tell Kryo the process is ready to snapshot:
 
 ```bash
 # Signal-based (default) - your code calls kryo.checkpoint()
-kryo snapshot create --name <name> -- <command>
+sudo kryo snapshot create --name <name> -- <command>
 
 # Timer-based - checkpoint after N seconds (for code you can't modify)
-kryo snapshot create --name <name> --wait 30 -- <command>
+sudo kryo snapshot create --name <name> --wait 30 -- <command>
 ```
 
 ### Restore and run
 
 ```bash
-kryo run --snapshot <name>
+sudo kryo run --snapshot <name>
 ```
 
 ### Manage snapshots
@@ -198,10 +210,10 @@ cd examples/python/qwen
 uv sync
 
 # Create snapshot (runs setup, freezes at kryo.checkpoint())
-kryo snapshot create --name qwen -- uv run python qwen.py
+sudo kryo snapshot create --name qwen -- uv run python qwen.py
 
 # Restore and run (sub-second cold start)
-kryo run --snapshot qwen
+sudo kryo run --snapshot qwen
 ```
 
 See [examples/](examples/) for more.
