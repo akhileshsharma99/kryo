@@ -112,20 +112,10 @@ sequenceDiagram
 
 ## Requirements
 
-- **Linux** — CRIU is Linux-only
-- **NVIDIA driver 550+** — for cuda-checkpoint
-- **[CRIU](https://criu.org/Installation)** — on PATH. On Ubuntu:
-
-  ```bash
-  sudo add-apt-repository -y ppa:criu/ppa
-  sudo apt-get update
-  sudo apt-get install -y criu
-  ```
-
-- **[cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint)** — on PATH as `cuda-checkpoint` (build from that repo)
-- **Elevated privileges** — CRIU dump/restore usually needs root, or `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE` on the `kryo` binary
-
-This is not the Java [Kryo](https://github.com/EsotericSoftware/kryo) serializer.
+- Linux
+- NVIDIA driver 550+
+- [CRIU](https://criu.org/)
+- [cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint)
 
 ## Installation
 
@@ -148,6 +138,16 @@ Python SDK:
 ```bash
 pip install kryo
 ```
+
+CRIU (Ubuntu):
+
+```bash
+sudo add-apt-repository -y ppa:criu/ppa
+sudo apt-get update
+sudo apt-get install -y criu
+```
+
+[cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) must be on `PATH` as `cuda-checkpoint`. Snapshot create and restore need root (or `CAP_CHECKPOINT_RESTORE` and `CAP_SYS_PTRACE`).
 
 ## Limitations
 
