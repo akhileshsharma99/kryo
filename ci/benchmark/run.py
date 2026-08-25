@@ -14,8 +14,11 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from functools import partial
 from pathlib import Path
 from typing import Any
+
+print = partial(print, flush=True)
 
 API_BASE = "https://cloud.lambdalabs.com/api/v1"
 INSTANCE_NAME_PREFIX = "kryo-gha"
@@ -56,7 +59,10 @@ def api_key() -> str:
 def request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
     """Call the Lambda Cloud API and return parsed JSON."""
     payload = None if body is None else json.dumps(body).encode()
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "kryo-benchmark/0.2",
+    }
     if payload is not None:
         headers["Content-Type"] = "application/json"
     token = base64.b64encode(f"{api_key()}:".encode()).decode()
@@ -169,8 +175,9 @@ def terminate_instance(instance_id: str) -> None:
     request("POST", "/instance-operations/terminate", {"instance_ids": [instance_id]})
 
 
-def wait_for_ip(instance_id: str, timeout: int = 600) -> str:
+def wait_for_ip(instance_id: str, timeout: int = 1200) -> str:
     """Poll until the instance is active and has an IPv4 address."""
+    print("waiting for Lambda boot (often several minutes)...")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         instance = get_instance(instance_id)
@@ -214,8 +221,9 @@ def ssh_base(identity: Path, ip: str) -> list[str]:
     ]
 
 
-def wait_for_ssh(identity: Path, ip: str, timeout: int = 600) -> None:
+def wait_for_ssh(identity: Path, ip: str, timeout: int = 1200) -> None:
     """Retry SSH until the VM accepts the key."""
+    print(f"waiting for ssh on {ip}...")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = subprocess.run(
@@ -315,7 +323,10 @@ def terminate_leaked() -> None:
     ]
     for instance_id in leaked:
         print(f"terminating leaked instance {instance_id}")
-        terminate_instance(instance_id)
+        try:
+            terminate_instance(instance_id)
+        except LambdaError as error:
+            print(f"warning: could not terminate {instance_id}: {error}")
 
 
 def generate_ssh_key(directory: Path) -> tuple[Path, str]:
@@ -356,17 +367,16 @@ def run_benchmark(runs: int, gpu: str, output: Path) -> None:
                 f"bash {REPO_REMOTE}/ci/benchmark/setup.sh {REPO_REMOTE}",
                 timeout=3600,
             )
-            remote_out = f"{REPO_REMOTE}/benchmarks/results/latest.json"
             ssh_run(
                 identity,
                 ip,
                 "export PATH=/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH; "
                 f"export BENCH_INSTANCE_TYPE={instance_type}; "
-                f"uv run --directory {REPO_REMOTE}/benchmarks python runner.py "
-                f"--all --runs {int(runs)} --output {remote_out}",
+                f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
+                f"--all --runs {int(runs)} --timeout 90 --output results/latest.json",
                 timeout=3600,
             )
-            scp_from(identity, ip, remote_out, output)
+            scp_from(identity, ip, f"{REPO_REMOTE}/benchmarks/results/latest.json", output)
             print(f"results copied to {output}")
         finally:
             if instance_id is not None:

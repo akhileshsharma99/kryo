@@ -31,7 +31,7 @@ jobs:
         env:
           LAMBDA_API_KEY: ${{ secrets.LAMBDA_API_KEY }}
         run: |
-          python3 ci/benchmark/run.py \
+          python3 -u ci/benchmark/run.py \
             --runs "${{ inputs.runs }}" \
             --gpu "${{ inputs.gpu }}" \
             --output benchmarks/results/latest.json
