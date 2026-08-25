@@ -64,7 +64,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: |
@@ -96,7 +96,7 @@ jobs:
 
       - name: Open results PR
         if: always() && inputs.tag != '' && hashFiles('benchmarks/results/latest.json') != ''
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ github.token }}
           commit-message: "chore: publish GPU benchmark results for ${{ inputs.tag }}"
