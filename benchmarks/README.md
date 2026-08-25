@@ -1,85 +1,52 @@
-# Cold Start Benchmarks
+# Kryo cold-start benchmarks
 
-Measures cold start times across ML scenarios (PyTorch, YOLO, Whisper, etc.) with consistent methodology, JSON results, and graph generation.
+Times **cold start** (fresh Python process) vs **Kryo restore** on the same NVIDIA GPU.
 
-## Prerequisites
-
-- [uv](https://docs.astral.sh/uv/) - Python package manager
-- Python 3.11+
+Do not run this on Modal or other serverless hosts: they snapshot their own containers, and CRIU needs a real VM with root.
 
 ## Scenarios
 
-| Scenario | What it measures |
-|----------|------------------|
-| `baseline` | Python stdlib imports |
-| `numpy_only` | NumPy import + matrix op |
-| `torch_cpu` | PyTorch CPU import + inference |
-| `torch_cuda` | PyTorch + CUDA init + inference |
-| `yolo` | Ultralytics YOLOv8 full pipeline |
-| `qwen3` | Qwen 2.5 LLM load + generate |
-| `whisper` | Whisper model load + transcribe |
-| `jina_embeddings` | Jina v3 embeddings |
+| Scenario | Workload |
+|----------|----------|
+| `torch_cuda` | PyTorch import, CUDA init, GPU matmul |
+| `yolo` | YOLOv8n load + one predict |
+| `qwen` | Qwen 2.5-0.5B load + warmup generate |
+| `whisper` | Whisper-tiny load + dummy transcription |
 
-## Setup
+Each scenario warms CUDA, then calls `kryo.checkpoint()` when launched under the Kryo CLI. After the checkpoint the process `_exit`s so timings measure time-to-ready, not interpreter shutdown.
+
+## Local (GPU VM)
+
+Needs Linux, NVIDIA driver 550+, CRIU, `cuda-checkpoint`, and the Kryo CLI (as root).
 
 ```bash
 cd benchmarks
 uv sync
+# Match the wheel to the driver CUDA version (Lambda A10 is often cu128):
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+.venv/bin/python download_models.py
+.venv/bin/python runner.py --all --runs 10 --timeout 90
 ```
 
-## Run Benchmarks
+Use `.venv/bin/python`, not `uv run`, after installing the CUDA wheel. `uv run` re-syncs the lockfile and can replace torch with a CPU build.
+
+`--timeout 90` kills a hung dump/restore. HuggingFace is forced offline during timed runs, so download weights first.
+
+Results: `results/latest.json` (gitignored). The README chart is `results/charts/cold-vs-kryo.svg`.
 
 ```bash
-# Single scenario
-uv run python runner.py --scenario baseline --runs 10
-
-# All scenarios
-uv run python runner.py --all --runs 50
-
-# Results saved to results/latest.json
+python3 ../ci/benchmark/format_results.py \
+  --json results/latest.json \
+  --svg results/charts/cold-vs-kryo.svg \
+  --patch-readme ../README.md
 ```
 
-## Analyze Results
+## Cloud
 
-```bash
-uv run python analyze.py
+GitHub Actions rents a Lambda GPU, bootstraps the box, runs this runner, then destroys the instance.
 
-# Generates:
-#   - graphs/phase_breakdown.png
-#   - graphs/total_comparison.png
-#   - graphs/variance.png
-```
+- **Each GitHub Release** — the Release workflow dispatches this job with 10 runs (not `release: published`; that event never fires when release-please uses `GITHUB_TOKEN`)
+- **Actions → GPU Benchmark** — `workflow_dispatch`; optional `tag` publishes JSON/SVG to that release and opens a `chore:` PR
 
-## Development
-
-```bash
-# Lint
-uv run ruff check .
-
-# Lint + auto-fix
-uv run ruff check --fix .
-
-# Format
-uv run ruff format .
-
-# Type check
-uv run mypy .
-```
-
-## Output Format
-
-Results are saved as JSON with statistics per phase:
-
-```json
-{
-  "scenarios": {
-    "torch_cuda": {
-      "phases": {
-        "import": {"mean": 1.2, "std": 0.05, "p50": 1.19, "p95": 1.28, "p99": 1.32},
-        "cuda_init": {"mean": 0.45, "std": 0.02, "p50": 0.44, "p95": 0.48, "p99": 0.51}
-      },
-      "total": {"mean": 2.10, "std": 0.08, "p50": 2.05, "p95": 2.20, "p99": 2.28}
-    }
-  }
-}
-```
+See [ci/benchmark/README.md](../ci/benchmark/README.md).

@@ -17,7 +17,7 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: uv
-    directory: /ci/benchmark-runner
+    directory: /ci/benchmark
     schedule:
       interval: weekly
   - package-ecosystem: uv

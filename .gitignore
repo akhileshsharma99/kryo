@@ -46,9 +46,12 @@ dist/
 .mypy_temp/
 .ruff_cache/
 
-# Benchmark caches (results and graphs are tracked)
+# Benchmark caches and generated timings
 benchmarks/.mypy_cache/
 benchmarks/.ruff_cache/
+# Local latest run; published JSON (v0.3.0.json, a10-smoke.json, ...) is committed
+benchmarks/results/latest.json
+benchmarks/scenarios/*.pt
 
 # Added by cargo
 

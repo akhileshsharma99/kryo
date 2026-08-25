@@ -1,0 +1,35 @@
+[project]
+name = "kryo-lambda-benchmark"
+version = "0.2.0"
+description = "Provision Lambda Cloud GPUs and run Kryo benchmarks"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+dev-dependencies = [
+    "mypy>=1.19.0",
+    "ruff>=0.9.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "UP",
+    "RUF",
+    "S",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"run.py" = ["T201", "S603", "S310", "S607"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

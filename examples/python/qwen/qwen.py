@@ -2,10 +2,10 @@
 
 Usage:
     # Create snapshot (runs setup, checkpoints)
-    kryo snapshot create --name qwen -- uv run python qwen.py
+    sudo kryo snapshot create --name qwen -- uv run python qwen.py
 
     # Restore and run (skips setup, runs inference)
-    kryo run --snapshot qwen
+    sudo kryo run --snapshot qwen
 """
 
 import kryo

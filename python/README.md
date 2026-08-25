@@ -1,12 +1,16 @@
 # Kryo Python SDK
 
-Python helper for [Kryo](https://github.com/akhileshsharma99/kryo) checkpoint signaling.
+Python helper for [Kryo](https://github.com/akhileshsharma99/kryo) checkpoint signaling. It is optional: other languages send `SIGUSR1` / wait for `SIGUSR2`, or use `kryo snapshot create --wait`.
+
+`kryo.checkpoint()` does not snapshot by itself. The Kryo CLI freezes the process after it receives that signal.
 
 ## Installation
 
 ```bash
 pip install kryo
 ```
+
+You still need the [Kryo CLI](https://github.com/akhileshsharma99/kryo#installation), CRIU, and `cuda-checkpoint` on Linux. `kryo snapshot create` and `kryo run` must be run as root (`sudo`).
 
 ## Usage
 
@@ -23,18 +27,18 @@ kryo.checkpoint()  # Freeze here
 result = model(input)
 ```
 
-Then use the Kryo CLI:
+Then:
 
 ```bash
-# Create snapshot
-kryo snapshot create --name mymodel -- python app.py
-
-# Restore and run
-kryo run --snapshot mymodel
+sudo kryo snapshot create --name mymodel -- python app.py
+sudo kryo run --snapshot mymodel
 ```
+
+`checkpoint()` is idempotent. Recreate the snapshot when the code, model, CUDA toolkit, or NVIDIA driver changes.
 
 ## Requirements
 
 - Linux (CRIU is Linux-only)
-- Kryo CLI installed
-- NVIDIA driver 550+ (for GPU checkpointing)
+- Kryo CLI on `PATH`
+- NVIDIA driver 550+ for GPU checkpointing
+- CRIU and `cuda-checkpoint`

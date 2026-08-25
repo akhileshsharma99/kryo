@@ -23,7 +23,7 @@
         },
         {
           "type": "toml",
-          "path": "ci/benchmark-runner/pyproject.toml",
+          "path": "ci/benchmark/pyproject.toml",
           "jsonpath": "$.project.version"
         }
       ]
