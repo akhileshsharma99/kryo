@@ -1,10 +1,10 @@
-"""Qwen 2.5-32B load, warmup generate, then checkpoint.
+"""Qwen 2.5-32B load, first generate, then checkpoint.
 
 ~30B-class stand-in. Needs ~80GB VRAM (H100 / A100 80GB), not an A10.
 """
 
 import torch
-from _base import maybe_checkpoint
+from _base import checkpoint_or_exit
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 if not torch.cuda.is_available():
@@ -19,7 +19,12 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="cuda",
 )
 inputs = tokenizer("Hello, world!", return_tensors="pt").to("cuda")
-with torch.no_grad():
-    model.generate(**inputs, max_new_tokens=1)
 
-maybe_checkpoint()
+
+def infer() -> None:
+    with torch.no_grad():
+        model.generate(**inputs, max_new_tokens=1)
+
+
+infer()
+checkpoint_or_exit(resume=infer)

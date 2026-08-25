@@ -1,10 +1,6 @@
 """vLLM engine start + CUDA-graph capture on Qwen 2.5-7B, then checkpoint.
 
-This is the production-like serving warmup: load weights, capture graphs, one
-generate. Workers are disabled so CRIU dumps a single process tree.
-
-Named vllm_engine.py so it does not shadow the pip `vllm` package
-(scenarios/ is on sys.path when these scripts run).
+Named vllm_engine.py so it does not shadow the pip `vllm` package.
 """
 
 import os
@@ -14,7 +10,7 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import torch
-from _base import maybe_checkpoint
+from _base import checkpoint_or_exit
 from vllm import LLM, SamplingParams
 
 if not torch.cuda.is_available():
@@ -33,6 +29,11 @@ llm = LLM(
     distributed_executor_backend="uni",
 )
 params = SamplingParams(max_tokens=1, temperature=0.0)
-_ = llm.generate(["Hello, world!"], params)
 
-maybe_checkpoint()
+
+def infer() -> None:
+    _ = llm.generate(["Hello, world!"], params)
+
+
+infer()
+checkpoint_or_exit(resume=infer)

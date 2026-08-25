@@ -278,14 +278,25 @@ def run_timed(
 
 
 def measure_runs(
-    command: list[str], cwd: Path, runs: int, timeout: int, *, drop_caches: bool = False
+    command: list[str],
+    cwd: Path,
+    runs: int,
+    timeout: int,
+    *,
+    drop_caches: bool = False,
+    warmup: bool = True,
 ) -> dict[str, Any]:
-    """Time a command `runs` times, dropping the first sample as warmup."""
+    """Time a command `runs` times. The first attempt is warmup unless disabled."""
     samples: list[float] = []
     errors: list[str] = []
-    total_attempts = runs + 1
+    total_attempts = runs + (1 if warmup else 0)
     for attempt in range(total_attempts):
-        label = "warmup" if attempt == 0 else f"{attempt}/{runs}"
+        is_warmup = warmup and attempt == 0
+        if is_warmup:
+            label = "warmup"
+        else:
+            numbered = attempt + 1 if not warmup else attempt
+            label = f"{numbered}/{runs}"
         print(f"    {label}...", end=" ", flush=True)
         try:
             elapsed, _ = run_timed(command, cwd, timeout, drop_caches=drop_caches)
@@ -297,7 +308,7 @@ def measure_runs(
             kill_stray_scenarios()
             continue
         print(f"{elapsed:.3f}s")
-        if attempt > 0:
+        if not is_warmup:
             samples.append(elapsed)
 
     if not samples:
@@ -342,17 +353,87 @@ def snapshot_bytes(name: str) -> int | None:
         return None
 
 
+def snapshot_name(scenario: str) -> str:
+    """Stable CRIU snapshot name for a scenario."""
+    return f"bench-{scenario}"
+
+
+def run_once(
+    scenario: str,
+    mode: str,
+    timeout: int,
+    *,
+    drop_caches: bool = True,
+    keep_snapshot: bool = True,
+) -> dict[str, Any]:
+    """One untimed create, or one timed cold/restore sample. No warmup."""
+    python = python_command(scenario)
+    kryo = kryo_command()
+    cwd = SCENARIOS_DIR
+    snapshot = snapshot_name(scenario)
+
+    if mode == "cold":
+        print("  cold start (1 sample)")
+        elapsed, _ = run_timed(python, cwd, timeout, drop_caches=drop_caches)
+        print(f"    1/1 {elapsed:.3f}s")
+        return {
+            "scenario": scenario,
+            "mode": "cold",
+            "seconds": elapsed,
+            "cold": {"runs": 1, "samples": [elapsed], "total": compute_stats([elapsed])},
+        }
+
+    if mode == "create":
+        print("  creating snapshot")
+        subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
+        run_timed([*kryo, "snapshot", "create", "--name", snapshot, "--", *python], cwd, timeout)
+        image_bytes = snapshot_bytes(snapshot)
+        if image_bytes is not None:
+            print(f"  snapshot images {image_bytes / (1024**3):.2f} GiB")
+        result: dict[str, Any] = {"scenario": scenario, "mode": "create"}
+        if image_bytes is not None:
+            result["snapshot_bytes"] = image_bytes
+        return result
+
+    if mode == "restore":
+        print("  kryo restore (1 sample)")
+        elapsed, _ = run_timed(
+            [*kryo, "run", "--snapshot", snapshot], cwd, timeout, drop_caches=drop_caches
+        )
+        print(f"    1/1 {elapsed:.3f}s")
+        if not keep_snapshot:
+            subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
+        kill_stray_scenarios()
+        return {
+            "scenario": scenario,
+            "mode": "restore",
+            "seconds": elapsed,
+            "kryo": {"runs": 1, "samples": [elapsed], "total": compute_stats([elapsed])},
+        }
+
+    raise ValueError(f"unknown --once mode: {mode}")
+
+
 def run_scenario(
-    scenario: str, runs: int, timeout: int, *, drop_caches: bool = False
+    scenario: str,
+    runs: int,
+    timeout: int,
+    *,
+    drop_caches: bool = False,
+    keep_snapshot: bool = False,
+    warmup: bool = True,
 ) -> dict[str, Any]:
     """Create one snapshot, then time cold start vs Kryo restore."""
     python = python_command(scenario)
     kryo = kryo_command()
     cwd = SCENARIOS_DIR
-    snapshot = f"bench-{scenario}"
+    snapshot = snapshot_name(scenario)
+    extra = ", 1 warmup" if warmup else ""
 
-    print(f"  cold start ({runs} runs, 1 warmup)")
-    cold = measure_runs(python, cwd, runs, timeout, drop_caches=drop_caches)
+    print(f"  cold start ({runs} runs{extra})")
+    cold = measure_runs(
+        python, cwd, runs, timeout, drop_caches=drop_caches, warmup=warmup
+    )
 
     print("  creating snapshot")
     subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
@@ -369,11 +450,17 @@ def run_scenario(
     if image_bytes is not None:
         print(f"  snapshot images {image_bytes / (1024**3):.2f} GiB")
 
-    print(f"  kryo restore ({runs} runs, 1 warmup)")
+    print(f"  kryo restore ({runs} runs{extra})")
     restored = measure_runs(
-        [*kryo, "run", "--snapshot", snapshot], cwd, runs, timeout, drop_caches=drop_caches
+        [*kryo, "run", "--snapshot", snapshot],
+        cwd,
+        runs,
+        timeout,
+        drop_caches=drop_caches,
+        warmup=warmup,
     )
-    subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
+    if not keep_snapshot:
+        subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
     kill_stray_scenarios()
 
     result: dict[str, Any] = {"cold": cold, "kryo": restored}
@@ -386,15 +473,8 @@ def run_scenario(
     return result
 
 
-def run_all(
-    scenarios: list[str],
-    runs: int,
-    timeout: int,
-    *,
-    drop_caches: bool = True,
-    tmpfs_snapshots: bool = False,
-) -> dict[str, Any]:
-    """Run every requested scenario and attach host metadata."""
+def prepare_snapshot_env(*, tmpfs_snapshots: bool = False) -> str:
+    """Set snapshot directory and lazy-pages defaults used by timed runs."""
     if tmpfs_snapshots:
         snapshots_dir = configure_tmpfs_snapshots()
     else:
@@ -404,6 +484,21 @@ def run_all(
         os.environ["KRYO_LAZY_PAGES"] = "0"
     print(f"  snapshots dir {snapshots_dir}")
     print(f"  lazy pages {os.environ.get('KRYO_LAZY_PAGES')}")
+    return snapshots_dir
+
+
+def run_all(
+    scenarios: list[str],
+    runs: int,
+    timeout: int,
+    *,
+    drop_caches: bool = True,
+    tmpfs_snapshots: bool = False,
+    keep_snapshot: bool = False,
+    warmup: bool = True,
+) -> dict[str, Any]:
+    """Run every requested scenario and attach host metadata."""
+    snapshots_dir = prepare_snapshot_env(tmpfs_snapshots=tmpfs_snapshots)
     print(f"  drop page cache {drop_caches}")
     version = kryo_version()
     results: dict[str, Any] = {
@@ -433,7 +528,12 @@ def run_all(
         print(f"\nScenario: {scenario}")
         try:
             results["scenarios"][scenario] = run_scenario(
-                scenario, runs, timeout, drop_caches=drop_caches
+                scenario,
+                runs,
+                timeout,
+                drop_caches=drop_caches,
+                keep_snapshot=keep_snapshot,
+                warmup=warmup,
             )
         except (ValueError, OSError, RuntimeError) as error:
             print(f"  Error: {error}")
@@ -470,6 +570,22 @@ def main() -> None:
         action="store_true",
         help="Store CRIU images on tmpfs (not prod-fair; default is disk)",
     )
+    parser.add_argument(
+        "--once",
+        choices=["cold", "create", "restore"],
+        help="One sample: timed cold, untimed snapshot create, or timed restore",
+    )
+    parser.add_argument(
+        "--keep-snapshot",
+        action="store_true",
+        help="Leave the CRIU snapshot on disk after restore (for reuse)",
+    )
+    parser.add_argument(
+        "--warmup",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Drop the first attempt as warmup (default: on; --once never warms up)",
+    )
     args = parser.parse_args()
 
     if args.runs < 1:
@@ -491,13 +607,28 @@ def main() -> None:
         print("\nError: Must specify --scenario, --scenarios, or --all")
         sys.exit(1)
 
-    results = run_all(
-        scenarios,
-        args.runs,
-        args.timeout,
-        drop_caches=args.drop_caches,
-        tmpfs_snapshots=args.tmpfs_snapshots,
-    )
+    if args.once:
+        if len(scenarios) != 1:
+            parser.error("--once requires exactly one --scenario")
+        prepare_snapshot_env(tmpfs_snapshots=args.tmpfs_snapshots)
+        print(f"  drop page cache {args.drop_caches}")
+        results = run_once(
+            scenarios[0],
+            args.once,
+            args.timeout,
+            drop_caches=args.drop_caches,
+            keep_snapshot=True if args.once else args.keep_snapshot,
+        )
+    else:
+        results = run_all(
+            scenarios,
+            args.runs,
+            args.timeout,
+            drop_caches=args.drop_caches,
+            tmpfs_snapshots=args.tmpfs_snapshots,
+            keep_snapshot=args.keep_snapshot,
+            warmup=args.warmup,
+        )
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = Path(args.output) if args.output else RESULTS_DIR / "latest.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -505,6 +636,14 @@ def main() -> None:
         json.dump(results, handle, indent=2)
 
     print(f"\nResults saved to: {output_path}")
+    if args.once:
+        seconds = results.get("seconds")
+        mode = results.get("mode")
+        if isinstance(seconds, float):
+            print(f"  {scenarios[0]} {mode}: {seconds:.3f}s")
+        else:
+            print(f"  {scenarios[0]} {mode}: {results}")
+        return
     for name, data in results["scenarios"].items():
         if "error" in data:
             print(f"  {name}: ERROR {data['error']}")
