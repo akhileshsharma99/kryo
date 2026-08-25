@@ -214,7 +214,7 @@ See [examples/](examples/) for more.
 
 ## Benchmarks
 
-Cold start (fresh Python process) vs Kryo restore on a real NVIDIA VM. Same GPU, same driver, same commit. Do not run this on Modal or other serverless hosts: they snapshot their own containers, and CRIU needs a real VM with root.
+Cold start vs Kryo restore on a real NVIDIA VM. Same GPU, same driver, same commit.
 
 <!-- BENCHMARK_RESULTS:START -->
 ![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
@@ -229,17 +229,7 @@ Cold start (fresh Python process) vs Kryo restore on a real NVIDIA VM. Same GPU,
 | Whisper-tiny | 3.92s | 1.43s | 2.7× |
 <!-- BENCHMARK_RESULTS:END -->
 
-```bash
-cd benchmarks
-uv sync
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-.venv/bin/python download_models.py
-.venv/bin/python runner.py --all --runs 10 --timeout 90
-```
-
-Use the venv interpreter after swapping in a CUDA torch wheel. `uv run` re-syncs the lockfile and can replace it with a CPU build.
-
-Each GitHub Release dispatches this comparison on Lambda Cloud (10 runs, A10 if in stock). You can also run **Actions → GPU Benchmark**. Results are uploaded as release assets and a `chore:` PR updates the chart above. See [benchmarks/](benchmarks/) and [ci/benchmark/](ci/benchmark/).
+How these are measured: [benchmarks/](benchmarks/). The published numbers come from repo CI on a rented GPU, not from running this on your laptop.
 
 ## Contributing
 
