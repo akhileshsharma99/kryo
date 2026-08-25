@@ -2,17 +2,32 @@
 
 Rents a Lambda Cloud GPU VM, installs CRIU / cuda-checkpoint / Kryo, runs cold start vs restore timings, then destroys the VM.
 
-Do not use Docker here. CRIU and `cuda-checkpoint` need host PIDs and the NVIDIA driver; a container would need `--privileged` and still fights process restore.
+Do not use Docker here. CRIU and `cuda-checkpoint` need host PIDs and the NVIDIA driver.
 
-## GitHub Actions
+## Triggers
 
-Manual only (`workflow_dispatch`). Add one repository secret:
+- **GitHub Release** — `release.yml` calls `gh workflow run benchmark.yml` after release-please publishes. This is required: GitHub drops `release: published` when the release is created with `GITHUB_TOKEN` (release-please's default), so that event will never run this job.
+- **Actions → GPU Benchmark** — `workflow_dispatch` with `runs`, `gpu`, and optional `tag`
+
+Not on pull requests. Public repo, paid GPU, secrets.
+
+## Secret
 
 - `LAMBDA_API_KEY` — Lambda Cloud API key (Basic auth username, empty password)
 
-The workflow creates an ephemeral SSH key, registers it with Lambda, launches a 1x GPU (A10 if in stock, otherwise the next available 1x type, or a type you pass in), copies this checkout, runs the bench, uploads `benchmarks/results/latest.json`, and always terminates the instance.
+The workflow creates an ephemeral SSH key, registers it with Lambda, launches a 1x GPU (A10 if in stock, otherwise the next available 1x type, or a type you pass in), copies this checkout, runs the bench, and always terminates the instance. The next run also kills leftover `kryo-gha-*` instances if a previous job was cancelled.
 
-Next run also kills any leftover `kryo-gha-*` instances if a previous job was cancelled.
+On the VM, `setup.sh` installs the prebuilt `cuda-checkpoint` binary (NVIDIA's repo has no Makefile) and a CUDA torch wheel that matches `nvidia-smi`. Timed runs use `benchmarks/.venv/bin/python`, not `uv run`.
+
+## Publishing
+
+When `tag` is set (Release always passes the new tag):
+
+1. Upload `kryo-benchmarks.json`, `.svg`, and `.md` as **release assets**
+2. Append a chart + table to the **release notes**
+3. Open a `chore:` PR that updates `benchmarks/results/<tag>.json`, the README chart, and the README table
+
+Dispatch without `tag` only uploads Actions artifacts. Bench failure does not un-publish crates or PyPI; it fails the GPU workflow only.
 
 ## Local orchestrator
 

@@ -57,6 +57,18 @@ def compute_stats(values: list[float]) -> dict[str, float]:
     }
 
 
+def kryo_version() -> str | None:
+    """Best-effort Kryo CLI version string."""
+    kryo = shutil.which("kryo")
+    if kryo is None:
+        return None
+    query = subprocess.run([kryo, "--version"], capture_output=True, text=True, check=False)
+    if query.returncode != 0:
+        return None
+    text = (query.stdout or query.stderr).strip()
+    return text or None
+
+
 def gpu_metadata() -> dict[str, str]:
     """Collect GPU name and driver from nvidia-smi when available."""
     metadata: dict[str, str] = {}
@@ -228,6 +240,7 @@ def run_scenario(scenario: str, runs: int, timeout: int) -> dict[str, Any]:
 
 def run_all(scenarios: list[str], runs: int, timeout: int) -> dict[str, Any]:
     """Run every requested scenario and attach host metadata."""
+    version = kryo_version()
     results: dict[str, Any] = {
         "metadata": {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -237,9 +250,16 @@ def run_all(scenarios: list[str], runs: int, timeout: int) -> dict[str, Any]:
         },
         "scenarios": {},
     }
-    instance_type = os.environ.get("BENCH_INSTANCE_TYPE")
-    if instance_type:
-        results["metadata"]["instance_type"] = instance_type
+    if version:
+        results["metadata"]["kryo"] = version
+    for key, env_name in (
+        ("instance_type", "BENCH_INSTANCE_TYPE"),
+        ("git_sha", "BENCH_GIT_SHA"),
+        ("release_tag", "BENCH_RELEASE_TAG"),
+    ):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            results["metadata"][key] = value
 
     for scenario in scenarios:
         print(f"\nScenario: {scenario}")

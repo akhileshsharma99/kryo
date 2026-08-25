@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -341,6 +342,22 @@ def generate_ssh_key(directory: Path) -> tuple[Path, str]:
     return private, public
 
 
+def git_sha() -> str:
+    """Commit being benched: explicit env, else this checkout, else GITHUB_SHA."""
+    override = os.environ.get("BENCH_GIT_SHA", "").strip()
+    if override:
+        return override
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            text=True,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        sha = ""
+    return sha or os.environ.get("GITHUB_SHA", "").strip()
+
+
 def run_benchmark(runs: int, gpu: str, output: Path) -> None:
     """Launch, bench, copy results, always terminate."""
     run_id = os.environ.get("GITHUB_RUN_ID", str(os.getpid()))
@@ -367,12 +384,20 @@ def run_benchmark(runs: int, gpu: str, output: Path) -> None:
                 f"bash {REPO_REMOTE}/ci/benchmark/setup.sh {REPO_REMOTE}",
                 timeout=3600,
             )
+            sha = git_sha()
+            tag = os.environ.get("BENCH_RELEASE_TAG", "").strip()
+            remote_env = (
+                "export PATH=/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH; "
+                f"export BENCH_INSTANCE_TYPE={shlex.quote(instance_type)}; "
+            )
+            if sha:
+                remote_env += f"export BENCH_GIT_SHA={shlex.quote(sha)}; "
+            if tag:
+                remote_env += f"export BENCH_RELEASE_TAG={shlex.quote(tag)}; "
             ssh_run(
                 identity,
                 ip,
-                "export PATH=/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH; "
-                f"export BENCH_INSTANCE_TYPE={instance_type}; "
-                f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
+                remote_env + f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
                 f"--all --runs {int(runs)} --timeout 90 --output results/latest.json",
                 timeout=3600,
             )

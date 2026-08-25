@@ -11,9 +11,18 @@ on:
         description: Lambda instance type (auto, gpu_1x_a10, gpu_1x_h100, ...)
         required: false
         default: "auto"
+      tag:
+        description: Release tag to publish results to (empty = artifacts only)
+        required: false
+        default: ""
+
+# Do not use `release: published`. release-please creates the GitHub Release
+# with GITHUB_TOKEN, and GitHub drops those events so they cannot recurse.
+# The Release workflow dispatches this one instead (workflow_dispatch is allowed).
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 concurrency:
   group: gpu-benchmark
@@ -26,20 +35,79 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - name: Run benchmarks
         env:
           LAMBDA_API_KEY: ${{ secrets.LAMBDA_API_KEY }}
+          BENCH_RELEASE_TAG: ${{ inputs.tag }}
         run: |
+          export BENCH_GIT_SHA="$(git rev-parse HEAD)"
           python3 -u ci/benchmark/run.py \
             --runs "${{ inputs.runs }}" \
             --gpu "${{ inputs.gpu }}" \
             --output benchmarks/results/latest.json
 
-      - name: Upload results
+      - name: Format results
+        if: always() && hashFiles('benchmarks/results/latest.json') != ''
+        run: |
+          python3 ci/benchmark/format_results.py \
+            --json benchmarks/results/latest.json \
+            --svg benchmarks/results/charts/cold-vs-kryo.svg \
+            --markdown "$RUNNER_TEMP/kryo-benchmarks.md" \
+            --patch-readme README.md
+          if [ -n "${{ inputs.tag }}" ]; then
+            cp benchmarks/results/latest.json "benchmarks/results/${{ inputs.tag }}.json"
+          fi
+
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: benchmarks/results/latest.json
+          path: |
+            benchmarks/results/latest.json
+            benchmarks/results/charts/cold-vs-kryo.svg
           if-no-files-found: ignore
+
+      - name: Publish to GitHub Release
+        if: always() && inputs.tag != '' && hashFiles('benchmarks/results/latest.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          cp benchmarks/results/latest.json "$RUNNER_TEMP/kryo-benchmarks.json"
+          cp benchmarks/results/charts/cold-vs-kryo.svg "$RUNNER_TEMP/kryo-benchmarks.svg"
+          gh release upload "$TAG" \
+            "$RUNNER_TEMP/kryo-benchmarks.json" \
+            "$RUNNER_TEMP/kryo-benchmarks.svg" \
+            "$RUNNER_TEMP/kryo-benchmarks.md" \
+            --clobber
+          gh release view "$TAG" --json body --jq .body > "$RUNNER_TEMP/notes-in.md"
+          python3 ci/benchmark/format_results.py \
+            --json benchmarks/results/latest.json \
+            --notes-in "$RUNNER_TEMP/notes-in.md" \
+            --notes-out "$RUNNER_TEMP/notes-out.md" \
+            --tag "$TAG" \
+            --repo "${{ github.repository }}"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes-out.md"
+
+      - name: Open results PR
+        if: always() && inputs.tag != '' && hashFiles('benchmarks/results/latest.json') != ''
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ github.token }}
+          commit-message: "chore: publish GPU benchmark results for ${{ inputs.tag }}"
+          title: "chore: publish GPU benchmark results for ${{ inputs.tag }}"
+          body: >
+            Automated GPU benchmark publish for `${{ inputs.tag }}`.
+            Review the README chart and table, then merge.
+            This is `chore:` so it will not cut a release.
+          branch: ci/benchmark-results-${{ inputs.tag }}
+          base: ${{ github.event.repository.default_branch }}
+          add-paths: |
+            README.md
+            benchmarks/results/${{ inputs.tag }}.json
+            benchmarks/results/charts/cold-vs-kryo.svg
