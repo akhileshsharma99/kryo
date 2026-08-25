@@ -219,14 +219,14 @@ Cold start vs Kryo restore on a real NVIDIA VM. Same GPU, same driver, same comm
 <!-- BENCHMARK_RESULTS:START -->
 ![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
 
-**NVIDIA A10** · Lambda `gpu_1x_a10` · driver 570 · 1 timed run + warmup. Smoke test; each GitHub Release replaces this with 10-run numbers.
+**NVIDIA A10** · Lambda `gpu_1x_a10` · driver 570.148.08 · 10 timed runs + warmup · release `v0.3.0`
 
 | Scenario | Cold start | Kryo restore | Speedup |
 |----------|------------|--------------|---------|
-| PyTorch CUDA | 1.38s | 0.94s | 1.5× |
-| YOLOv8n | 2.70s | 1.24s | 2.2× |
-| Qwen 2.5-0.5B | 4.26s | 2.14s | 2.0× |
-| Whisper-tiny | 3.92s | 1.43s | 2.7× |
+| PyTorch CUDA | 1.37s | 0.95s | 1.4x |
+| YOLOv8n | 2.71s | 1.21s | 2.2x |
+| Qwen 2.5-0.5B | 4.29s | 2.14s | 2.0x |
+| Whisper-tiny | 3.94s | 1.33s | 3.0x |
 <!-- BENCHMARK_RESULTS:END -->
 
 How these are measured: [benchmarks/](benchmarks/). The published numbers come from repo CI on a rented GPU, not from running this on your laptop.
