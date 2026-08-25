@@ -53,6 +53,7 @@ benchmarks/.ruff_cache/
 benchmarks/results/latest.json
 benchmarks/scenarios/*.pt
 ci/benchmark/.session/
+ci/benchmark/.snapshots/
 
 # Added by cargo
 

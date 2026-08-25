@@ -1,0 +1,28 @@
+# Cheap release CI: one A10, four tiny scenarios, 10 samples each.
+# Downloads and snapshot create are untimed; only time-to-first-inference is measured.
+
+idle_timeout: 10m
+provider: lambda
+caps:
+  gpu_1x_a10: 1
+golden:
+  mode: setup
+snapshots:
+  store: local
+jobs:
+  - scenario: torch_cuda
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90
+  - scenario: yolo
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90
+  - scenario: qwen
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90
+  - scenario: whisper
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90

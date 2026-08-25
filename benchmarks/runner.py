@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, stdev
@@ -40,6 +41,16 @@ OPTIONAL_SCENARIOS = [
 KNOWN_SCENARIOS = ALL_SCENARIOS + OPTIONAL_SCENARIOS
 
 DEFAULT_TIMEOUT_SECONDS = 90
+
+
+@dataclass(frozen=True)
+class BenchFlags:
+    """How timed runs treat disk cache, warmup, and leftover snapshots."""
+
+    drop_caches: bool = True
+    warmup: bool = True
+    keep_snapshot: bool = False
+    tmpfs_snapshots: bool = False
 
 
 def compute_stats(values: list[float]) -> dict[str, float]:
@@ -282,24 +293,22 @@ def measure_runs(
     cwd: Path,
     runs: int,
     timeout: int,
-    *,
-    drop_caches: bool = False,
-    warmup: bool = True,
+    flags: BenchFlags,
 ) -> dict[str, Any]:
     """Time a command `runs` times. The first attempt is warmup unless disabled."""
     samples: list[float] = []
     errors: list[str] = []
-    total_attempts = runs + (1 if warmup else 0)
+    total_attempts = runs + (1 if flags.warmup else 0)
     for attempt in range(total_attempts):
-        is_warmup = warmup and attempt == 0
+        is_warmup = flags.warmup and attempt == 0
         if is_warmup:
             label = "warmup"
         else:
-            numbered = attempt + 1 if not warmup else attempt
+            numbered = attempt + 1 if not flags.warmup else attempt
             label = f"{numbered}/{runs}"
         print(f"    {label}...", end=" ", flush=True)
         try:
-            elapsed, _ = run_timed(command, cwd, timeout, drop_caches=drop_caches)
+            elapsed, _ = run_timed(command, cwd, timeout, drop_caches=flags.drop_caches)
         except RuntimeError as error:
             print("FAILED")
             message = str(error).strip().splitlines()[-1] if str(error).strip() else str(error)
@@ -362,9 +371,7 @@ def run_once(
     scenario: str,
     mode: str,
     timeout: int,
-    *,
-    drop_caches: bool = True,
-    keep_snapshot: bool = True,
+    flags: BenchFlags,
 ) -> dict[str, Any]:
     """One untimed create, or one timed cold/restore sample. No warmup."""
     python = python_command(scenario)
@@ -374,7 +381,7 @@ def run_once(
 
     if mode == "cold":
         print("  cold start (1 sample)")
-        elapsed, _ = run_timed(python, cwd, timeout, drop_caches=drop_caches)
+        elapsed, _ = run_timed(python, cwd, timeout, drop_caches=flags.drop_caches)
         print(f"    1/1 {elapsed:.3f}s")
         return {
             "scenario": scenario,
@@ -398,11 +405,15 @@ def run_once(
     if mode == "restore":
         print("  kryo restore (1 sample)")
         elapsed, _ = run_timed(
-            [*kryo, "run", "--snapshot", snapshot], cwd, timeout, drop_caches=drop_caches
+            [*kryo, "run", "--snapshot", snapshot], cwd, timeout, drop_caches=flags.drop_caches
         )
         print(f"    1/1 {elapsed:.3f}s")
-        if not keep_snapshot:
-            subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
+        if not flags.keep_snapshot:
+            subprocess.run(
+                [*kryo, "snapshot", "delete", snapshot],
+                check=False,
+                capture_output=True,
+            )
         kill_stray_scenarios()
         return {
             "scenario": scenario,
@@ -418,22 +429,17 @@ def run_scenario(
     scenario: str,
     runs: int,
     timeout: int,
-    *,
-    drop_caches: bool = False,
-    keep_snapshot: bool = False,
-    warmup: bool = True,
+    flags: BenchFlags,
 ) -> dict[str, Any]:
     """Create one snapshot, then time cold start vs Kryo restore."""
     python = python_command(scenario)
     kryo = kryo_command()
     cwd = SCENARIOS_DIR
     snapshot = snapshot_name(scenario)
-    extra = ", 1 warmup" if warmup else ""
+    extra = ", 1 warmup" if flags.warmup else ""
 
     print(f"  cold start ({runs} runs{extra})")
-    cold = measure_runs(
-        python, cwd, runs, timeout, drop_caches=drop_caches, warmup=warmup
-    )
+    cold = measure_runs(python, cwd, runs, timeout, flags)
 
     print("  creating snapshot")
     subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
@@ -456,10 +462,9 @@ def run_scenario(
         cwd,
         runs,
         timeout,
-        drop_caches=drop_caches,
-        warmup=warmup,
+        flags,
     )
-    if not keep_snapshot:
+    if not flags.keep_snapshot:
         subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
     kill_stray_scenarios()
 
@@ -491,15 +496,11 @@ def run_all(
     scenarios: list[str],
     runs: int,
     timeout: int,
-    *,
-    drop_caches: bool = True,
-    tmpfs_snapshots: bool = False,
-    keep_snapshot: bool = False,
-    warmup: bool = True,
+    flags: BenchFlags,
 ) -> dict[str, Any]:
     """Run every requested scenario and attach host metadata."""
-    snapshots_dir = prepare_snapshot_env(tmpfs_snapshots=tmpfs_snapshots)
-    print(f"  drop page cache {drop_caches}")
+    snapshots_dir = prepare_snapshot_env(tmpfs_snapshots=flags.tmpfs_snapshots)
+    print(f"  drop page cache {flags.drop_caches}")
     version = kryo_version()
     results: dict[str, Any] = {
         "metadata": {
@@ -508,7 +509,7 @@ def run_all(
             "timeout_seconds": timeout,
             "snapshots_dir": snapshots_dir,
             "lazy_pages": os.environ.get("KRYO_LAZY_PAGES", ""),
-            "drop_caches": drop_caches,
+            "drop_caches": flags.drop_caches,
             **gpu_metadata(),
         },
         "scenarios": {},
@@ -527,19 +528,53 @@ def run_all(
     for scenario in scenarios:
         print(f"\nScenario: {scenario}")
         try:
-            results["scenarios"][scenario] = run_scenario(
-                scenario,
-                runs,
-                timeout,
-                drop_caches=drop_caches,
-                keep_snapshot=keep_snapshot,
-                warmup=warmup,
-            )
+            results["scenarios"][scenario] = run_scenario(scenario, runs, timeout, flags)
         except (ValueError, OSError, RuntimeError) as error:
             print(f"  Error: {error}")
             results["scenarios"][scenario] = {"error": str(error)}
             kill_stray_scenarios()
     return results
+
+
+def select_scenarios(parser: argparse.ArgumentParser, args: argparse.Namespace) -> list[str]:
+    """Resolve --scenario / --scenarios / --all into a list of names."""
+    if args.scenario:
+        return [args.scenario]
+    if args.scenarios:
+        scenarios = [item.strip() for item in args.scenarios.split(",") if item.strip()]
+        unknown = [item for item in scenarios if item not in KNOWN_SCENARIOS]
+        if unknown:
+            parser.error(f"unknown scenarios: {', '.join(unknown)}")
+        return scenarios
+    if args.all:
+        return ALL_SCENARIOS
+    parser.print_help()
+    print("\nError: Must specify --scenario, --scenarios, or --all")
+    sys.exit(1)
+
+
+def print_summary(results: dict[str, Any], *, once: bool, scenarios: list[str]) -> None:
+    """Print a short cold vs restore summary."""
+    if once:
+        seconds = results.get("seconds")
+        mode = results.get("mode")
+        if isinstance(seconds, float):
+            print(f"  {scenarios[0]} {mode}: {seconds:.3f}s")
+        else:
+            print(f"  {scenarios[0]} {mode}: {results}")
+        return
+    for name, data in results["scenarios"].items():
+        if "error" in data:
+            print(f"  {name}: ERROR {data['error']}")
+            continue
+        cold = data.get("cold", {}).get("total", {}).get("mean")
+        kryo = data.get("kryo", {}).get("total", {}).get("mean")
+        speedup = data.get("speedup")
+        if isinstance(cold, float) and isinstance(kryo, float):
+            extra = f"  ({speedup:.1f}x)" if isinstance(speedup, float) else ""
+            print(f"  {name}: cold {cold:.3f}s  kryo {kryo:.3f}s{extra}")
+        else:
+            print(f"  {name}: incomplete ({data})")
 
 
 def main() -> None:
@@ -548,7 +583,7 @@ def main() -> None:
     parser.add_argument("--scenario", choices=KNOWN_SCENARIOS, help="Single scenario")
     parser.add_argument(
         "--scenarios",
-        help="Comma-separated scenarios (includes optional probes like qwen7,vllm_engine,torch_compile)",
+        help="Comma-separated scenarios (qwen7, vllm_engine, torch_compile, ...)",
     )
     parser.add_argument("--all", action="store_true", help="Run release scenarios only")
     parser.add_argument("--runs", type=int, default=10, help="Timed runs per mode (default: 10)")
@@ -593,42 +628,22 @@ def main() -> None:
     if args.timeout < 1:
         parser.error("--timeout must be >= 1")
 
-    if args.scenario:
-        scenarios = [args.scenario]
-    elif args.scenarios:
-        scenarios = [item.strip() for item in args.scenarios.split(",") if item.strip()]
-        unknown = [item for item in scenarios if item not in KNOWN_SCENARIOS]
-        if unknown:
-            parser.error(f"unknown scenarios: {', '.join(unknown)}")
-    elif args.all:
-        scenarios = ALL_SCENARIOS
-    else:
-        parser.print_help()
-        print("\nError: Must specify --scenario, --scenarios, or --all")
-        sys.exit(1)
+    scenarios = select_scenarios(parser, args)
+    flags = BenchFlags(
+        drop_caches=args.drop_caches,
+        warmup=False if args.once else args.warmup,
+        keep_snapshot=True if args.once else args.keep_snapshot,
+        tmpfs_snapshots=args.tmpfs_snapshots,
+    )
 
     if args.once:
         if len(scenarios) != 1:
             parser.error("--once requires exactly one --scenario")
-        prepare_snapshot_env(tmpfs_snapshots=args.tmpfs_snapshots)
-        print(f"  drop page cache {args.drop_caches}")
-        results = run_once(
-            scenarios[0],
-            args.once,
-            args.timeout,
-            drop_caches=args.drop_caches,
-            keep_snapshot=True if args.once else args.keep_snapshot,
-        )
+        prepare_snapshot_env(tmpfs_snapshots=flags.tmpfs_snapshots)
+        print(f"  drop page cache {flags.drop_caches}")
+        results = run_once(scenarios[0], args.once, args.timeout, flags)
     else:
-        results = run_all(
-            scenarios,
-            args.runs,
-            args.timeout,
-            drop_caches=args.drop_caches,
-            tmpfs_snapshots=args.tmpfs_snapshots,
-            keep_snapshot=args.keep_snapshot,
-            warmup=args.warmup,
-        )
+        results = run_all(scenarios, args.runs, args.timeout, flags)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = Path(args.output) if args.output else RESULTS_DIR / "latest.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -636,26 +651,7 @@ def main() -> None:
         json.dump(results, handle, indent=2)
 
     print(f"\nResults saved to: {output_path}")
-    if args.once:
-        seconds = results.get("seconds")
-        mode = results.get("mode")
-        if isinstance(seconds, float):
-            print(f"  {scenarios[0]} {mode}: {seconds:.3f}s")
-        else:
-            print(f"  {scenarios[0]} {mode}: {results}")
-        return
-    for name, data in results["scenarios"].items():
-        if "error" in data:
-            print(f"  {name}: ERROR {data['error']}")
-            continue
-        cold = data.get("cold", {}).get("total", {}).get("mean")
-        kryo = data.get("kryo", {}).get("total", {}).get("mean")
-        speedup = data.get("speedup")
-        if isinstance(cold, float) and isinstance(kryo, float):
-            extra = f"  ({speedup:.1f}x)" if isinstance(speedup, float) else ""
-            print(f"  {name}: cold {cold:.3f}s  kryo {kryo:.3f}s{extra}")
-        else:
-            print(f"  {name}: incomplete ({data})")
+    print_summary(results, once=bool(args.once), scenarios=scenarios)
 
 
 if __name__ == "__main__":
