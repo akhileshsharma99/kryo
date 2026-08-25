@@ -9,9 +9,11 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import mean, stdev
@@ -27,7 +29,7 @@ ALL_SCENARIOS = [
     "whisper",
 ]
 
-RUN_TIMEOUT_SECONDS = 600
+DEFAULT_TIMEOUT_SECONDS = 90
 
 
 def compute_stats(values: list[float]) -> dict[str, float]:
@@ -103,25 +105,61 @@ def python_command(scenario: str) -> list[str]:
     return [sys.executable, str(script)]
 
 
-def run_timed(command: list[str], cwd: Path) -> tuple[float, str]:
+def scenario_env() -> dict[str, str]:
+    """Keep HuggingFace from leaving TCP sockets that CRIU cannot dump."""
+    env = os.environ.copy()
+    env.setdefault("HF_HUB_OFFLINE", "1")
+    env.setdefault("TRANSFORMERS_OFFLINE", "1")
+    env.setdefault("YOLO_OFFLINE", "True")
+    return env
+
+
+def kill_process_group(pid: int) -> None:
+    """Kill a timed-out command and anything in its session."""
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        with suppress(ProcessLookupError, PermissionError, OSError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def kill_stray_scenarios() -> None:
+    """CRIU restore reparents the workload to PID 1, so killing kryo is not enough."""
+    pkill = shutil.which("pkill")
+    if pkill is None:
+        return
+    for scenario in ALL_SCENARIOS:
+        script = str((SCENARIOS_DIR / f"{scenario}.py").resolve())
+        subprocess.run([pkill, "-9", "-f", script], check=False, capture_output=True)
+
+
+def run_timed(command: list[str], cwd: Path, timeout: int) -> tuple[float, str]:
     """Run a command and return wall-clock seconds plus combined output."""
     started = time.perf_counter()
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         command,
         cwd=str(cwd),
-        capture_output=True,
+        env=scenario_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=RUN_TIMEOUT_SECONDS,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        output, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_process_group(proc.pid)
+        kill_stray_scenarios()
+        leftover, _ = proc.communicate(timeout=5)
+        output = leftover or ""
+        raise RuntimeError(f"timed out after {timeout}s: {output[-2000:]}") from None
     elapsed = time.perf_counter() - started
-    output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0:
-        raise RuntimeError(f"command failed ({proc.returncode}): {output[-4000:]}")
-    return elapsed, output
+        raise RuntimeError(f"command failed ({proc.returncode}): {(output or '')[-4000:]}")
+    return elapsed, output or ""
 
 
-def measure_runs(command: list[str], cwd: Path, runs: int) -> dict[str, Any]:
+def measure_runs(command: list[str], cwd: Path, runs: int, timeout: int) -> dict[str, Any]:
     """Time a command `runs` times, dropping the first sample as warmup."""
     samples: list[float] = []
     errors: list[str] = []
@@ -130,10 +168,13 @@ def measure_runs(command: list[str], cwd: Path, runs: int) -> dict[str, Any]:
         label = "warmup" if attempt == 0 else f"{attempt}/{runs}"
         print(f"    {label}...", end=" ", flush=True)
         try:
-            elapsed, _ = run_timed(command, cwd)
-        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            elapsed, _ = run_timed(command, cwd, timeout)
+        except RuntimeError as error:
             print("FAILED")
+            message = str(error).strip().splitlines()[-1] if str(error).strip() else str(error)
+            print(f"      {message}")
             errors.append(str(error))
+            kill_stray_scenarios()
             continue
         print(f"{elapsed:.3f}s")
         if attempt > 0:
@@ -151,7 +192,7 @@ def measure_runs(command: list[str], cwd: Path, runs: int) -> dict[str, Any]:
     return result
 
 
-def run_scenario(scenario: str, runs: int) -> dict[str, Any]:
+def run_scenario(scenario: str, runs: int, timeout: int) -> dict[str, Any]:
     """Create one snapshot, then time cold start vs Kryo restore."""
     python = python_command(scenario)
     kryo = kryo_command()
@@ -159,21 +200,23 @@ def run_scenario(scenario: str, runs: int) -> dict[str, Any]:
     snapshot = f"bench-{scenario}"
 
     print(f"  cold start ({runs} runs, 1 warmup)")
-    cold = measure_runs(python, cwd, runs)
+    cold = measure_runs(python, cwd, runs, timeout)
 
     print("  creating snapshot")
     subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
     try:
-        run_timed([*kryo, "snapshot", "create", "--name", snapshot, "--", *python], cwd)
-    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        run_timed([*kryo, "snapshot", "create", "--name", snapshot, "--", *python], cwd, timeout)
+    except RuntimeError as error:
+        kill_stray_scenarios()
         return {
             "cold": cold,
             "kryo": {"error": f"snapshot create failed: {error}"},
         }
 
     print(f"  kryo restore ({runs} runs, 1 warmup)")
-    restored = measure_runs([*kryo, "run", "--snapshot", snapshot], cwd, runs)
+    restored = measure_runs([*kryo, "run", "--snapshot", snapshot], cwd, runs, timeout)
     subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
+    kill_stray_scenarios()
 
     result: dict[str, Any] = {"cold": cold, "kryo": restored}
     cold_mean = cold.get("total", {}).get("mean")
@@ -183,12 +226,13 @@ def run_scenario(scenario: str, runs: int) -> dict[str, Any]:
     return result
 
 
-def run_all(scenarios: list[str], runs: int) -> dict[str, Any]:
+def run_all(scenarios: list[str], runs: int, timeout: int) -> dict[str, Any]:
     """Run every requested scenario and attach host metadata."""
     results: dict[str, Any] = {
         "metadata": {
             "timestamp": datetime.now(UTC).isoformat(),
             "runs_per_mode": runs,
+            "timeout_seconds": timeout,
             **gpu_metadata(),
         },
         "scenarios": {},
@@ -200,10 +244,11 @@ def run_all(scenarios: list[str], runs: int) -> dict[str, Any]:
     for scenario in scenarios:
         print(f"\nScenario: {scenario}")
         try:
-            results["scenarios"][scenario] = run_scenario(scenario, runs)
+            results["scenarios"][scenario] = run_scenario(scenario, runs, timeout)
         except (ValueError, OSError, RuntimeError) as error:
             print(f"  Error: {error}")
             results["scenarios"][scenario] = {"error": str(error)}
+            kill_stray_scenarios()
     return results
 
 
@@ -213,11 +258,19 @@ def main() -> None:
     parser.add_argument("--scenario", choices=ALL_SCENARIOS, help="Single scenario")
     parser.add_argument("--all", action="store_true", help="Run all scenarios")
     parser.add_argument("--runs", type=int, default=10, help="Timed runs per mode (default: 10)")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"Seconds before a hung run is killed (default: {DEFAULT_TIMEOUT_SECONDS})",
+    )
     parser.add_argument("--output", type=str, default=None, help="JSON output path")
     args = parser.parse_args()
 
     if args.runs < 1:
         parser.error("--runs must be >= 1")
+    if args.timeout < 1:
+        parser.error("--timeout must be >= 1")
 
     if args.scenario:
         scenarios = [args.scenario]
@@ -228,7 +281,7 @@ def main() -> None:
         print("\nError: Must specify --scenario or --all")
         sys.exit(1)
 
-    results = run_all(scenarios, args.runs)
+    results = run_all(scenarios, args.runs, args.timeout)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = Path(args.output) if args.output else RESULTS_DIR / "latest.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)

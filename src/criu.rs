@@ -25,6 +25,7 @@ impl Criu {
             .arg("-D")
             .arg(&self.images_dir)
             .arg("--shell-job")
+            .arg("--tcp-close")
             .status()?;
 
         if status.success() {
@@ -44,6 +45,7 @@ impl Criu {
             .arg("-D")
             .arg(&self.images_dir)
             .arg("--shell-job")
+            .arg("--tcp-close")
             .status()?;
 
         if status.success() {
@@ -65,6 +67,7 @@ impl Criu {
             .arg("-D")
             .arg(&self.images_dir)
             .arg("--shell-job")
+            .arg("--tcp-close")
             .arg("-d") // Detach
             .arg("--pidfile")
             .arg(&pidfile)

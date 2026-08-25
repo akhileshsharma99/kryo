@@ -6,6 +6,11 @@ from kryo import checkpoint
 
 
 def maybe_checkpoint() -> None:
-    """Freeze when launched by `kryo snapshot create`; no-op for cold runs."""
+    """Freeze under Kryo, then exit.
+
+    Benchmarks measure time-to-ready, not interpreter shutdown. Ultralytics
+    and other CUDA apps can deadlock joining threads after CRIU restore.
+    """
     if os.environ.get("KRYO_CLI_PID"):
         checkpoint()
+    os._exit(0)

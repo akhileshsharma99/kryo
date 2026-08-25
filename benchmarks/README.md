@@ -25,7 +25,7 @@ uv sync
 # CUDA PyTorch (Lambda / any NVIDIA box):
 uv pip install torch --index-url https://download.pytorch.org/whl/cu124
 
-uv run python runner.py --all --runs 10
+uv run python runner.py --all --runs 10 --timeout 90
 ```
 
 Results: `results/latest.json`.

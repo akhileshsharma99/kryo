@@ -55,7 +55,7 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "scenarios/*.py" = ["T201", "PLC0415"]
-"runner.py" = ["T201", "S603"]
+"runner.py" = ["T201", "S603", "S607"]
 "download_models.py" = ["T201"]
 
 [tool.mypy]
