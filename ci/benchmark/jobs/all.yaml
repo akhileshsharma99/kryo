@@ -1,0 +1,47 @@
+# Every public scenario. A10 for tiny models, H100 for 7B/32B.
+# Snapshot dump and golden setup run once per digest, then only timed inference.
+
+idle_timeout: 10m
+provider: lambda
+caps:
+  gpu_1x_a10: 1
+  gpu_1x_h100_pcie: 1
+golden:
+  mode: tarball
+  store: filesystem
+  filesystem: kryo-golden
+snapshots:
+  store: filesystem
+jobs:
+  - scenario: torch_cuda
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90
+  - scenario: yolo
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90
+  - scenario: qwen
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90
+  - scenario: whisper
+    gpu: gpu_1x_a10
+    samples: 10
+    timeout: 90
+  - scenario: qwen7
+    gpu: gpu_1x_h100_pcie
+    samples: 3
+    timeout: 600
+  - scenario: torch_compile
+    gpu: gpu_1x_h100_pcie
+    samples: 3
+    timeout: 900
+  - scenario: vllm_engine
+    gpu: gpu_1x_h100_pcie
+    samples: 3
+    timeout: 900
+  - scenario: qwen32
+    gpu: gpu_1x_h100_pcie
+    samples: 2
+    timeout: 1200

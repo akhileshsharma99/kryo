@@ -10,7 +10,7 @@ golden:
   store: filesystem
   filesystem: kryo-golden
 snapshots:
-  store: local
+  store: filesystem
 jobs:
   - scenario: torch_cuda
     gpu: gpu_1x_a10

@@ -26,6 +26,7 @@ from golden import pack_command as pack_golden_command
 from providers import get_provider
 from providers.base import Machine, Provider
 from snapshots import digest as snapshot_digest
+from snapshots import nfs_tarball as snapshot_nfs_tarball
 from snapshots import pack_command as pack_snapshot_command
 from snapshots import read_hash_command, tarball_path, unpack_command, write_hash_command
 
@@ -349,11 +350,12 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
     pooled.golden = True
 
 
-def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job) -> int | None:
-    """Make sure `bench-{scenario}` on the VM matches the current digest.
+def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> int | None:
+    """Create the CRIU snapshot once per digest, then reuse it.
 
-    Downloads and snapshot create are untimed. Timed restore later reads the
-    files from disk after drop_caches.
+    Dump is untimed. Timed restore later reads the files from disk after
+    drop_caches. Tarballs live on the Lambda filesystem when configured, so a
+    new VM does not dump again.
     """
     machine = pooled.machine
     kryo_ver = provider.run_output(machine, "kryo --version").strip()
@@ -368,6 +370,18 @@ def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job) -> int | None:
         pooled.snap_digests.add(wanted)
         return None
 
+    nfs = ""
+    if plan.snapshots.store == "filesystem" and machine.filesystem:
+        nfs = snapshot_nfs_tarball(machine.filesystem, job.scenario, machine.sku, wanted)
+        have = provider.run_output(
+            machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
+        ).strip()
+        if have == "yes":
+            print(f"snapshot hit filesystem {job.scenario} {wanted}")
+            provider.run(machine, unpack_command(job.scenario, wanted, nfs), timeout=600)
+            pooled.snap_digests.add(wanted)
+            return None
+
     cache = tarball_path(job.scenario, machine.sku, wanted)
     if cache.is_file():
         print(f"snapshot hit local cache {cache.name}")
@@ -376,22 +390,25 @@ def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job) -> int | None:
         pooled.snap_digests.add(wanted)
         return None
 
-    print(f"snapshot miss {job.scenario} {wanted}; creating")
+    print(f"snapshot miss {job.scenario} {wanted}; creating once")
     env = remote_env(machine.sku)
     scenario = shlex.quote(job.scenario)
+    create_timeout = max(job.timeout * 2, job.timeout + 180)
     provider.run(
         machine,
         env + f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
         f"--scenario {scenario} --once create --timeout {int(job.timeout)} "
         f"--output {REMOTE_SAMPLE}",
-        timeout=job.timeout + 120,
+        timeout=create_timeout,
     )
     provider.run(machine, write_hash_command(job.scenario, wanted))
-    provider.run(machine, pack_snapshot_command(job.scenario), timeout=600)
-    partial = cache.with_suffix(".partial")
-    provider.get(machine, "/tmp/kryo-snap.tgz", partial)
-    partial.replace(cache)
-    provider.run(machine, "rm -f /tmp/kryo-snap.tgz")
+    dest = nfs if nfs else "/tmp/kryo-snap.tgz"
+    provider.run(machine, pack_snapshot_command(job.scenario, dest), timeout=600)
+    if dest == "/tmp/kryo-snap.tgz":
+        partial = cache.with_suffix(".partial")
+        provider.get(machine, dest, partial)
+        partial.replace(cache)
+        provider.run(machine, "rm -f /tmp/kryo-snap.tgz")
     pooled.snap_digests.add(wanted)
     local_json = Path(tempfile.gettempdir()) / f"kryo-create-{job.scenario}.json"
     try:
@@ -435,7 +452,7 @@ def run_sample(
     job = sample.job
     print(f"sample {job.scenario}[{sample.index + 1}/{job.samples}] on {pooled.machine.id}")
     ensure_golden(provider, pooled, job, plan)
-    image_bytes = ensure_snapshot(provider, pooled, job)
+    image_bytes = ensure_snapshot(provider, pooled, job, plan)
     work = Path("/tmp")
     cold_json = work / f"kryo-cold-{job.scenario}-{sample.index}.json"
     restore_json = work / f"kryo-restore-{job.scenario}-{sample.index}.json"

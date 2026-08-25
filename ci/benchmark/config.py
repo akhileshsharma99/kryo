@@ -55,9 +55,9 @@ class GoldenConfig:
 
 @dataclass(frozen=True)
 class SnapshotConfig:
-    """Where CRIU snapshot tarballs live. `local` is a directory on the controller."""
+    """Where CRIU snapshot tarballs live. `filesystem` is the Lambda golden disk."""
 
-    store: str = "local"
+    store: str = "filesystem"
 
 
 @dataclass(frozen=True)
@@ -184,9 +184,9 @@ def load_plan(path: Path) -> BenchPlan:
     filesystem = filesystem_raw.strip()
     snap_raw = data.get("snapshots") or {}
     snap_map = _require_mapping(snap_raw, "snapshots") if snap_raw else {}
-    store = snap_map.get("store", "local")
-    if store != "local":
-        raise ValueError(f"unsupported snapshots.store: {store!r} (only local)")
+    snap_store = str(snap_map.get("store", "filesystem"))
+    if snap_store not in {"local", "filesystem"}:
+        raise ValueError(f"unsupported snapshots.store: {snap_store!r} (local or filesystem)")
     jobs_raw = data.get("jobs")
     if not isinstance(jobs_raw, list) or not jobs_raw:
         raise ValueError("jobs must be a non-empty list")
@@ -205,6 +205,6 @@ def load_plan(path: Path) -> BenchPlan:
             store=golden_store,
             filesystem=filesystem,
         ),
-        snapshots=SnapshotConfig(store="local"),
+        snapshots=SnapshotConfig(store=snap_store),
         jobs=jobs,
     )

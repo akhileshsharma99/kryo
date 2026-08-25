@@ -10,7 +10,7 @@ golden:
   store: filesystem
   filesystem: kryo-golden
 snapshots:
-  store: local
+  store: filesystem
 jobs:
   - scenario: qwen7
     gpu: gpu_1x_h100_pcie

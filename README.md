@@ -214,7 +214,7 @@ See [examples/](examples/) for more.
 
 ## Benchmarks
 
-Cold start vs Kryo restore on a real NVIDIA VM. Same GPU, same driver, same commit.
+Time to first inference on a real NVIDIA GPU: a fresh Python process vs restoring a Kryo snapshot. The page cache is dropped first, so weights are read from disk like a new pod.
 
 <!-- BENCHMARK_RESULTS:START -->
 ![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
@@ -229,7 +229,7 @@ Cold start vs Kryo restore on a real NVIDIA VM. Same GPU, same driver, same comm
 | Whisper-tiny | 3.94s | 1.33s | 3.0x |
 <!-- BENCHMARK_RESULTS:END -->
 
-How these are measured: [benchmarks/](benchmarks/). The published numbers come from repo CI on a rented GPU, not from running this on your laptop.
+How these are measured: [benchmarks/](benchmarks/). CI rents a GPU; this will not run on a Mac.
 
 ## Contributing
 

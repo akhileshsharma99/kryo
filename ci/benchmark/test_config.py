@@ -41,6 +41,7 @@ class LoadPlanTests(unittest.TestCase):
         self.assertEqual(plan.golden.mode, "tarball")
         self.assertEqual(plan.golden.store, "filesystem")
         self.assertEqual(plan.golden.filesystem, "kryo-golden")
+        self.assertEqual(plan.snapshots.store, "filesystem")
 
     def test_digest_changes_with_sku(self) -> None:
         left = golden_digest("gpu_1x_a10", "550.00", "12.8")

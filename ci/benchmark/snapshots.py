@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import shlex
 from pathlib import Path
 
 from config import SCENARIO_WEIGHTS
+from golden import nfs_dir
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CACHE_DIR = Path(__file__).resolve().parent / ".snapshots"
@@ -48,24 +50,33 @@ def remote_hash_path(scenario: str) -> str:
     return f"{REMOTE_HASH_ROOT}/{scenario}.hash"
 
 
-def pack_command(scenario: str) -> str:
-    """Tar the CRIU directory on the VM so the controller can cache it."""
+def nfs_tarball(filesystem: str, scenario: str, sku: str, snap_digest: str) -> str:
+    """On-box path of a CRIU snapshot tarball on the attached filesystem."""
+    return f"{nfs_dir(filesystem)}/snapshots/{scenario}-{sku}-{snap_digest}.tgz"
+
+
+def pack_command(scenario: str, destination: str = "/tmp/kryo-snap.tgz") -> str:
+    """Tar the CRIU directory on the VM so later restores can skip dump."""
     name = snapshot_id(scenario)
+    quoted = shlex.quote(destination)
+    parent = shlex.quote(destination.rsplit("/", 1)[0])
     return (
-        f"sudo tar -C {REMOTE_SNAP_ROOT} -czf /tmp/kryo-snap.tgz {name} && "
-        f"sudo chmod 644 /tmp/kryo-snap.tgz"
+        f"sudo mkdir -p {parent} {REMOTE_SNAP_ROOT} && "
+        f"sudo tar -C {REMOTE_SNAP_ROOT} -czf {quoted} {name} && "
+        f"sudo chmod 644 {quoted}"
     )
 
 
-def unpack_command(scenario: str, snap_digest: str) -> str:
+def unpack_command(scenario: str, snap_digest: str, source: str = "/tmp/kryo-snap.tgz") -> str:
     """Install a cached tarball as the live CRIU snapshot and record its digest."""
     name = snapshot_id(scenario)
     hash_path = remote_hash_path(scenario)
+    quoted = shlex.quote(source)
+    cleanup = f" && sudo rm -f {quoted}" if source == "/tmp/kryo-snap.tgz" else ""
     return (
         f"sudo mkdir -p {REMOTE_SNAP_ROOT} {REMOTE_HASH_ROOT} && "
         f"sudo rm -rf {REMOTE_SNAP_ROOT}/{name} && "
-        f"sudo tar -C {REMOTE_SNAP_ROOT} -xzf /tmp/kryo-snap.tgz && "
-        f"sudo rm -f /tmp/kryo-snap.tgz && "
+        f"sudo tar -C {REMOTE_SNAP_ROOT} -xzf {quoted}{cleanup} && "
         f"echo {snap_digest} | sudo tee {hash_path} >/dev/null"
     )
 
