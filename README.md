@@ -145,7 +145,7 @@ sudo apt-get install -y criu
 
 Other distros: [CRIU install docs](https://criu.org/Installation).
 
-**cuda-checkpoint:** build [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) and put `cuda-checkpoint` on your `PATH`.
+**cuda-checkpoint:** NVIDIA ships prebuilt binaries under [`bin/`](https://github.com/NVIDIA/cuda-checkpoint/tree/main/bin) (`x86_64_Linux`, `aarch64_Linux`). Put `cuda-checkpoint` on your `PATH`, or build from [NVIDIA/cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint).
 
 **Python package** (optional):
 
@@ -214,15 +214,32 @@ See [examples/](examples/) for more.
 
 ## Benchmarks
 
-Cold start vs Kryo restore on a real NVIDIA VM (not serverless). Same GPU, same driver, same commit.
+Cold start (fresh Python process) vs Kryo restore on a real NVIDIA VM. Same GPU, same driver, same commit. Do not run this on Modal or other serverless hosts: they snapshot their own containers, and CRIU needs a real VM with root.
+
+<!-- BENCHMARK_RESULTS:START -->
+![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
+
+**NVIDIA A10** · Lambda `gpu_1x_a10` · driver 570 · 1 timed run + warmup. Smoke test; each GitHub Release replaces this with 10-run numbers.
+
+| Scenario | Cold start | Kryo restore | Speedup |
+|----------|------------|--------------|---------|
+| PyTorch CUDA | 1.38s | 0.94s | 1.5× |
+| YOLOv8n | 2.70s | 1.24s | 2.2× |
+| Qwen 2.5-0.5B | 4.26s | 2.14s | 2.0× |
+| Whisper-tiny | 3.92s | 1.43s | 2.7× |
+<!-- BENCHMARK_RESULTS:END -->
 
 ```bash
 cd benchmarks
 uv sync
-uv run python runner.py --all --runs 10
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+.venv/bin/python download_models.py
+.venv/bin/python runner.py --all --runs 10 --timeout 90
 ```
 
-GitHub Actions can rent a Lambda Cloud GPU and run that comparison (`workflow_dispatch`). See [benchmarks/](benchmarks/) and [ci/benchmark/](ci/benchmark/).
+Use the venv interpreter after swapping in a CUDA torch wheel. `uv run` re-syncs the lockfile and can replace it with a CPU build.
+
+Each GitHub Release dispatches this comparison on Lambda Cloud (10 runs, A10 if in stock). You can also run **Actions → GPU Benchmark**. Results are uploaded as release assets and a `chore:` PR updates the chart above. See [benchmarks/](benchmarks/) and [ci/benchmark/](ci/benchmark/).
 
 ## Contributing
 

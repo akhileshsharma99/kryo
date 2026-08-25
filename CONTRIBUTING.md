@@ -31,3 +31,5 @@ This repo uses [Conventional Commits](https://www.conventionalcommits.org/). PR 
 - `docs:`, `ci:`, `chore:` do not release
 
 One version is shared across `Cargo.toml` and every `pyproject.toml`. Do not bump versions by hand.
+
+GPU benchmarks are not part of PR CI (paid Lambda GPU, repo secret). They run on each GitHub Release and via **Actions → GPU Benchmark**. See [ci/benchmark/README.md](ci/benchmark/README.md).
