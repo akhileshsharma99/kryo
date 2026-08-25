@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/akhileshsharma99/kryo/compare/v0.2.0...v0.3.0) (2026-08-25)
+
+
+### Features
+
+* **benchmarks:** time cold start against Kryo restore on Lambda ([#20](https://github.com/akhileshsharma99/kryo/issues/20)) ([6695f18](https://github.com/akhileshsharma99/kryo/commit/6695f18860267592c4817c1aa5dacf86bbc60796))
+
 ## [0.2.0](https://github.com/akhileshsharma99/kryo/compare/v0.1.0...v0.2.0) (2026-08-24)
 
 
