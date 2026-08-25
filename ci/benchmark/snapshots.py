@@ -60,11 +60,14 @@ def pack_command(scenario: str, destination: str = "/tmp/kryo-snap.tgz") -> str:
     name = snapshot_id(scenario)
     quoted = shlex.quote(destination)
     parent = shlex.quote(destination.rsplit("/", 1)[0])
-    return (
-        f"sudo mkdir -p {parent} {REMOTE_SNAP_ROOT} && "
-        f"sudo tar -C {REMOTE_SNAP_ROOT} -czf {quoted} {name} && "
-        f"sudo chmod 644 {quoted}"
+    pack_tmp = (
+        f"sudo mkdir -p {REMOTE_SNAP_ROOT} && "
+        f"sudo tar -C {REMOTE_SNAP_ROOT} -czf /tmp/kryo-snap.tgz {name} && "
+        f"sudo chmod 644 /tmp/kryo-snap.tgz"
     )
+    if destination == "/tmp/kryo-snap.tgz":
+        return pack_tmp
+    return f"{pack_tmp} && mkdir -p {parent} && cp /tmp/kryo-snap.tgz {quoted}"
 
 
 def unpack_command(scenario: str, snap_digest: str, source: str = "/tmp/kryo-snap.tgz") -> str:

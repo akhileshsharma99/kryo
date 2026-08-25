@@ -42,8 +42,15 @@ if [ ! -s "$list" ]; then
 fi
 
 sort -u "$list" -o "$list"
-sudo mkdir -p "$(dirname "$OUT")"
+tmp="$(mktemp --suffix=.tgz)"
 sudo tar -C / --exclude='**/.kryo/snapshots' --exclude='**/__pycache__' \
-  --warning=no-file-changed -czf "$OUT" --files-from="$list"
-sudo chmod 644 "$OUT"
-echo "packed golden $OUT ($(sudo du -h "$OUT" | awk '{print $1}'))"
+  --warning=no-file-changed -czf "$tmp" --files-from="$list"
+sudo chmod 644 "$tmp"
+mkdir -p "$(dirname "$OUT")"
+if [[ "$OUT" == /lambda/nfs/* ]]; then
+  cp "$tmp" "$OUT"
+else
+  sudo mv "$tmp" "$OUT"
+fi
+rm -f "$tmp"
+echo "packed golden $OUT ($(du -h "$OUT" | awk '{print $1}'))"

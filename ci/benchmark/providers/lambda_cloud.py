@@ -295,10 +295,10 @@ def wait_for_ip(instance_id: str, timeout: int = 1200) -> str:
         status = instance.get("status")
         ip = instance.get("ip")
         print(f"instance {instance_id} status={status} ip={ip}")
-        if status == "active" and isinstance(ip, str) and IPV4_RE.fullmatch(ip):
-            return ip
         if status in {"unhealthy", "terminated"}:
             raise LambdaError(f"instance entered {status}")
+        if isinstance(ip, str) and IPV4_RE.fullmatch(ip):
+            return ip
         time.sleep(10)
     raise LambdaError(f"timed out waiting for instance {instance_id}")
 
