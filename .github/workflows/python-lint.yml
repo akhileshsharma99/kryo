@@ -39,5 +39,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./ci/actions/python-lint
+        id: lint
         with:
           working-directory: ci/benchmark
+      - name: Job schema tests
+        if: steps.lint.outputs.skipped != 'true'
+        working-directory: ci/benchmark
+        run: uv run python -m unittest discover -s . -p 'test_*.py'

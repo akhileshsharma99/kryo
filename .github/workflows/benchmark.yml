@@ -3,14 +3,10 @@ name: GPU Benchmark
 on:
   workflow_dispatch:
     inputs:
-      runs:
-        description: Timed runs per scenario per mode (plus one warmup)
+      jobs:
+        description: Job file under ci/benchmark/jobs (release.yaml, prod-fair.yaml)
         required: false
-        default: "10"
-      gpu:
-        description: Lambda instance type (auto, gpu_1x_a10, gpu_1x_h100, ...)
-        required: false
-        default: "auto"
+        default: "release.yaml"
       tag:
         description: Release tag to publish results to (empty = artifacts only)
         required: false
@@ -32,12 +28,14 @@ jobs:
   benchmark:
     name: Lambda GPU
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v7
 
       - name: Run benchmarks
         env:
@@ -45,10 +43,10 @@ jobs:
           BENCH_RELEASE_TAG: ${{ inputs.tag }}
         run: |
           export BENCH_GIT_SHA="$(git rev-parse HEAD)"
-          python3 -u ci/benchmark/run.py \
-            --runs "${{ inputs.runs }}" \
-            --gpu "${{ inputs.gpu }}" \
-            --output benchmarks/results/latest.json
+          uv sync --directory ci/benchmark
+          uv run --directory ci/benchmark python -u run.py \
+            --jobs "jobs/${{ inputs.jobs }}" \
+            --output ../../benchmarks/results/latest.json
 
       - name: Format results
         if: always() && hashFiles('benchmarks/results/latest.json') != ''
