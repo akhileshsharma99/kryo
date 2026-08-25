@@ -26,6 +26,7 @@ INSTANCE_NAME_PREFIX = "kryo-gha"
 SSH_KEY_PREFIX = "kryo-gha"
 SSH_USER = "ubuntu"
 REPO_REMOTE = "kryo"
+DEV_INSTANCE_NAME = "kryo-dev"
 
 PREFERRED_INSTANCE_TYPES = [
     "gpu_1x_a10",
@@ -43,17 +44,37 @@ INSTANCE_TYPE_RE = re.compile(r"^gpu_1x_[a-z0-9_]+$")
 IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SESSION_DIR = REPO_ROOT / "ci" / "benchmark" / ".session"
+SESSION_KEY = SESSION_DIR / "id_ed25519"
+SESSION_FILE = SESSION_DIR / "session.json"
 
 
 class LambdaError(RuntimeError):
     """Lambda Cloud API error."""
 
 
+def load_dotenv() -> None:
+    """Load KEY=value pairs from the repo-root .env without overriding the process env."""
+    path = REPO_ROOT / ".env"
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        value = value.strip().strip("'").strip('"')
+        if name and name not in os.environ:
+            os.environ[name] = value
+
+
 def api_key() -> str:
-    """Read LAMBDA_API_KEY from the environment."""
+    """Read LAMBDA_API_KEY from the environment or repo-root .env."""
+    load_dotenv()
     key = os.environ.get("LAMBDA_API_KEY", "").strip()
     if not key:
-        raise LambdaError("LAMBDA_API_KEY is not set")
+        raise LambdaError("LAMBDA_API_KEY is not set (export it or put it in .env)")
     return key
 
 
@@ -127,8 +148,25 @@ def choose_instance_type(requested: str) -> tuple[str, str]:
     return name, available[name][0]
 
 
+def find_ssh_key_id(name: str) -> str | None:
+    """Return the Lambda SSH key id for a name, if it exists."""
+    data = request("GET", "/ssh-keys").get("data", [])
+    if not isinstance(data, list):
+        return None
+    for item in data:
+        if isinstance(item, dict) and item.get("name") == name:
+            key_id = item.get("id")
+            if isinstance(key_id, str):
+                return key_id
+            return name
+    return None
+
+
 def add_ssh_key(name: str, public_key: str) -> str:
     """Upload an SSH public key; return the Lambda key id."""
+    existing = find_ssh_key_id(name)
+    if existing is not None:
+        delete_ssh_key(existing)
     data = request("POST", "/ssh-keys", {"name": name, "public_key": public_key}).get("data", {})
     key_id = data.get("id")
     if not isinstance(key_id, str):
@@ -331,8 +369,10 @@ def terminate_leaked() -> None:
 
 
 def generate_ssh_key(directory: Path) -> tuple[Path, str]:
-    """Create an ephemeral ed25519 key pair."""
+    """Create an ed25519 key pair, replacing any leftover files."""
     private = directory / "id_ed25519"
+    private.unlink(missing_ok=True)
+    (directory / "id_ed25519.pub").unlink(missing_ok=True)
     subprocess.run(
         [require_bin("ssh-keygen"), "-t", "ed25519", "-f", str(private), "-N", "", "-q"],
         check=True,
@@ -340,6 +380,133 @@ def generate_ssh_key(directory: Path) -> tuple[Path, str]:
     public = (directory / "id_ed25519.pub").read_text(encoding="utf-8").strip()
     private.chmod(0o600)
     return private, public
+
+
+def save_session(
+    identity: Path,
+    instance_id: str,
+    ip: str,
+    instance_type: str,
+    key_id: str,
+    ssh_key_name: str,
+) -> None:
+    """Persist SSH key and instance metadata for --reuse."""
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    SESSION_DIR.chmod(0o700)
+    if identity.resolve() != SESSION_KEY.resolve():
+        shutil.copy2(identity, SESSION_KEY)
+    SESSION_KEY.chmod(0o600)
+    SESSION_FILE.write_text(
+        json.dumps(
+            {
+                "instance_id": instance_id,
+                "ip": ip,
+                "instance_type": instance_type,
+                "key_id": key_id,
+                "ssh_key_name": ssh_key_name,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def instance_type_name(instance: dict[str, Any]) -> str:
+    """Read the instance type from a Lambda instance record."""
+    raw = instance.get("instance_type")
+    if isinstance(raw, dict):
+        nested = raw.get("name")
+        if isinstance(nested, str):
+            return nested
+    if isinstance(raw, str):
+        return raw
+    name = instance.get("instance_type_name")
+    if isinstance(name, str):
+        return name
+    return "unknown"
+
+
+def recover_session() -> dict[str, str]:
+    """Load a saved session, or rebuild one from a live kryo-dev VM."""
+    if SESSION_FILE.is_file() and SESSION_KEY.is_file():
+        return load_session()
+    if not SESSION_KEY.is_file():
+        raise LambdaError("no saved session; launch with --keep first")
+    live = find_instance_named(DEV_INSTANCE_NAME)
+    if live is None or not isinstance(live.get("id"), str):
+        raise LambdaError("no saved session; launch with --keep first")
+    ip = live.get("ip")
+    if not isinstance(ip, str) or not IPV4_RE.fullmatch(ip):
+        raise LambdaError(f"{DEV_INSTANCE_NAME} has no ipv4 yet")
+    key_id = find_ssh_key_id(DEV_INSTANCE_NAME) or DEV_INSTANCE_NAME
+    save_session(
+        SESSION_KEY,
+        live["id"],
+        ip,
+        instance_type_name(live),
+        key_id,
+        DEV_INSTANCE_NAME,
+    )
+    print(f"recovered session for {live['id']}")
+    return load_session()
+
+
+def load_session() -> dict[str, str]:
+    """Read a previously saved --keep session."""
+    if not SESSION_FILE.is_file() or not SESSION_KEY.is_file():
+        raise LambdaError("no saved session; launch with --keep first")
+    data = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise LambdaError("invalid session file")
+    required = ("instance_id", "ip", "instance_type", "key_id", "ssh_key_name")
+    session = {key: data[key] for key in required if isinstance(data.get(key), str)}
+    if len(session) != len(required):
+        raise LambdaError("invalid session file")
+    return session
+
+
+def find_instance(instance_id: str) -> dict[str, Any] | None:
+    """Return one instance record, or None if it is gone."""
+    data = request("GET", "/instances").get("data", [])
+    if not isinstance(data, list):
+        return None
+    for item in data:
+        if isinstance(item, dict) and item.get("id") == instance_id:
+            return item
+    return None
+
+
+def find_instance_named(name: str) -> dict[str, Any] | None:
+    """Return a live instance with this name, if any."""
+    data = request("GET", "/instances").get("data", [])
+    if not isinstance(data, list):
+        return None
+    for item in data:
+        if (
+            isinstance(item, dict)
+            and item.get("name") == name
+            and item.get("status") not in {"terminated", "terminating"}
+        ):
+            return item
+    return None
+
+
+def destroy_dev_session() -> None:
+    """Terminate the kept dev instance and drop its SSH key."""
+    try:
+        session = recover_session()
+    except LambdaError:
+        session = load_session()
+    print(f"terminating {session['instance_id']}")
+    try:
+        terminate_instance(session["instance_id"])
+    except LambdaError as error:
+        print(f"warning: terminate failed: {error}", file=sys.stderr)
+    delete_ssh_key(session["key_id"])
+    SESSION_KEY.unlink(missing_ok=True)
+    SESSION_FILE.unlink(missing_ok=True)
+    print("dev instance destroyed")
 
 
 def git_sha() -> str:
@@ -358,32 +525,112 @@ def git_sha() -> str:
     return sha or os.environ.get("GITHUB_SHA", "").strip()
 
 
-def run_benchmark(runs: int, gpu: str, output: Path) -> None:
-    """Launch, bench, copy results, always terminate."""
+def run_benchmark(
+    runs: int,
+    gpu: str,
+    output: Path,
+    scenarios: list[str] | None = None,
+    timeout: int = 90,
+    keep: bool = False,
+    reuse: bool = False,
+    skip_setup: bool = False,
+    setup_only: bool = False,
+) -> None:
+    """Launch or reuse a GPU VM, run benches, optionally leave the VM up."""
     run_id = os.environ.get("GITHUB_RUN_ID", str(os.getpid()))
-    instance_name = f"{INSTANCE_NAME_PREFIX}-{run_id}"
-    ssh_key_name = f"{SSH_KEY_PREFIX}-{run_id}"
+    instance_name = DEV_INSTANCE_NAME if keep or reuse else f"{INSTANCE_NAME_PREFIX}-{run_id}"
+    ssh_key_name = DEV_INSTANCE_NAME if keep or reuse else f"{SSH_KEY_PREFIX}-{run_id}"
 
-    terminate_leaked()
-    instance_type, region = choose_instance_type(gpu)
-    print(f"using {instance_type} in {region}")
+    if not reuse:
+        terminate_leaked()
+        if keep:
+            live = find_instance_named(DEV_INSTANCE_NAME)
+            if live is not None:
+                raise LambdaError(
+                    f"{DEV_INSTANCE_NAME} is already running ({live.get('id')}); "
+                    "use --reuse or --destroy"
+                )
+            if SESSION_FILE.is_file() and SESSION_KEY.is_file():
+                session = load_session()
+                leftover = find_instance(session["instance_id"])
+                if leftover is not None:
+                    raise LambdaError(
+                        f"saved instance {session['instance_id']} is still up; "
+                        "use --reuse or --destroy"
+                    )
 
     instance_id: str | None = None
     key_id: str | None = None
-    with tempfile.TemporaryDirectory() as tmp:
-        identity, public_key = generate_ssh_key(Path(tmp))
-        try:
+    ip = ""
+    instance_type = gpu
+    persist_dir = SESSION_DIR if keep or reuse else Path(tempfile.mkdtemp(prefix="kryo-bench-"))
+
+    try:
+        if reuse:
+            session = recover_session()
+            instance_id = session["instance_id"]
+            key_id = session["key_id"]
+            instance_type = session["instance_type"]
+            identity = SESSION_KEY
+            live = find_instance(instance_id)
+            if live is None:
+                raise LambdaError(f"saved instance {instance_id} is gone")
+            status = live.get("status")
+            if status not in {"active", "booting"}:
+                raise LambdaError(f"instance {instance_id} is {status}")
+            print(f"reusing {instance_id} ({instance_type})")
+            ip = wait_for_ip(instance_id)
+            wait_for_ssh(identity, ip)
+        else:
+            instance_type, region = choose_instance_type(gpu)
+            print(f"using {instance_type} in {region}")
+            persist_dir.mkdir(parents=True, exist_ok=True)
+            identity, public_key = generate_ssh_key(persist_dir)
             key_id = add_ssh_key(ssh_key_name, public_key)
             instance_id = launch_instance(instance_type, region, ssh_key_name, instance_name)
             ip = wait_for_ip(instance_id)
             wait_for_ssh(identity, ip)
-            rsync_repo(identity, ip)
+            if keep and key_id is not None:
+                save_session(identity, instance_id, ip, instance_type, key_id, ssh_key_name)
+
+        rsync_repo(identity, ip)
+        if not skip_setup:
             ssh_run(
                 identity,
                 ip,
                 f"bash {REPO_REMOTE}/ci/benchmark/setup.sh {REPO_REMOTE}",
                 timeout=3600,
             )
+        else:
+            ssh_run(
+                identity,
+                ip,
+                f"source $HOME/.cargo/env && cd {REPO_REMOTE} && "
+                "cargo build --release --locked && "
+                "sudo install -m 755 target/release/kryo /usr/local/bin/kryo",
+                timeout=600,
+            )
+        extra_llms = [
+            name for name in (scenarios or []) if name in {"qwen7", "qwen32", "vllm_engine", "torch_compile"}
+        ]
+        if extra_llms:
+            flags = " ".join(f"--scenario {shlex.quote(name)}" for name in extra_llms)
+            ssh_run(
+                identity,
+                ip,
+                f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python download_models.py {flags}",
+                timeout=7200,
+            )
+        if scenarios and "vllm_engine" in scenarios:
+            ssh_run(
+                identity,
+                ip,
+                f"bash {REPO_REMOTE}/ci/benchmark/install_vllm.sh {REPO_REMOTE}",
+                timeout=1800,
+            )
+        if setup_only:
+            print("setup only; skipping runner")
+        else:
             sha = git_sha()
             tag = os.environ.get("BENCH_RELEASE_TAG", "").strip()
             remote_env = (
@@ -394,16 +641,27 @@ def run_benchmark(runs: int, gpu: str, output: Path) -> None:
                 remote_env += f"export BENCH_GIT_SHA={shlex.quote(sha)}; "
             if tag:
                 remote_env += f"export BENCH_RELEASE_TAG={shlex.quote(tag)}; "
+            if scenarios:
+                select = f"--scenarios {shlex.quote(','.join(scenarios))}"
+            else:
+                select = "--all"
             ssh_run(
                 identity,
                 ip,
                 remote_env + f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
-                f"--all --runs {int(runs)} --timeout 90 --output results/latest.json",
-                timeout=3600,
+                f"{select} --runs {int(runs)} --timeout {int(timeout)} "
+                "--output results/latest.json",
+                timeout=10800,
             )
             scp_from(identity, ip, f"{REPO_REMOTE}/benchmarks/results/latest.json", output)
             print(f"results copied to {output}")
-        finally:
+        if keep and instance_id is not None:
+            print(f"leaving {instance_id} ({ip}) running as {instance_name}")
+            print("reuse: doppler run -- python3 -u ci/benchmark/run.py --reuse --skip-setup ...")
+    finally:
+        if keep or reuse:
+            pass
+        else:
             if instance_id is not None:
                 print(f"terminating {instance_id}")
                 try:
@@ -412,6 +670,8 @@ def run_benchmark(runs: int, gpu: str, output: Path) -> None:
                     print(f"warning: terminate failed: {error}", file=sys.stderr)
             if key_id is not None:
                 delete_ssh_key(key_id)
+            if persist_dir != SESSION_DIR:
+                shutil.rmtree(persist_dir, ignore_errors=True)
 
 
 def main() -> None:
@@ -424,13 +684,44 @@ def main() -> None:
         help="Lambda instance type (gpu_1x_a10, gpu_1x_h100, ...) or auto",
     )
     parser.add_argument(
+        "--scenarios",
+        default="",
+        help="Comma-separated scenarios (default: release --all set)",
+    )
+    parser.add_argument("--timeout", type=int, default=90, help="Seconds per timed command")
+    parser.add_argument(
         "--output",
         default=str(REPO_ROOT / "benchmarks" / "results" / "latest.json"),
     )
+    parser.add_argument("--keep", action="store_true", help="Leave the VM running after the job")
+    parser.add_argument("--reuse", action="store_true", help="Attach to a VM saved by --keep")
+    parser.add_argument("--skip-setup", action="store_true", help="Skip bootstrap on --reuse")
+    parser.add_argument("--setup-only", action="store_true", help="Provision/sync but do not bench")
+    parser.add_argument("--destroy", action="store_true", help="Terminate the kept dev VM")
     args = parser.parse_args()
+    if args.destroy:
+        destroy_dev_session()
+        return
+    if args.reuse and args.keep:
+        parser.error("use --reuse or --keep, not both")
+    if args.skip_setup and not args.reuse:
+        parser.error("--skip-setup only applies with --reuse")
     if args.runs < 1:
         parser.error("--runs must be >= 1")
-    run_benchmark(args.runs, args.gpu, Path(args.output))
+    if args.timeout < 1:
+        parser.error("--timeout must be >= 1")
+    scenarios = [item.strip() for item in args.scenarios.split(",") if item.strip()] or None
+    run_benchmark(
+        args.runs,
+        args.gpu,
+        Path(args.output),
+        scenarios,
+        args.timeout,
+        keep=args.keep,
+        reuse=args.reuse,
+        skip_setup=args.skip_setup,
+        setup_only=args.setup_only,
+    )
 
 
 if __name__ == "__main__":

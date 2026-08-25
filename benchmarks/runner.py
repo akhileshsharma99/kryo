@@ -29,6 +29,16 @@ ALL_SCENARIOS = [
     "whisper",
 ]
 
+# Optional probes; not part of --all / release CI.
+OPTIONAL_SCENARIOS = [
+    "qwen7",
+    "qwen32",
+    "vllm_engine",
+    "torch_compile",
+]
+
+KNOWN_SCENARIOS = ALL_SCENARIOS + OPTIONAL_SCENARIOS
+
 DEFAULT_TIMEOUT_SECONDS = 90
 
 
@@ -94,22 +104,31 @@ def gpu_metadata() -> dict[str, str]:
 
 
 def kryo_command() -> list[str]:
-    """Prefix that runs the Kryo CLI with root, keeping PATH."""
+    """Prefix that runs the Kryo CLI with root, keeping PATH and snapshot env."""
     kryo = shutil.which("kryo")
     if kryo is None:
         raise FileNotFoundError("kryo CLI not found on PATH")
+    extra: list[str] = []
+    snapshots = os.environ.get("KRYO_SNAPSHOTS_DIR", "").strip()
+    if snapshots:
+        extra.append(f"KRYO_SNAPSHOTS_DIR={snapshots}")
+    lazy = os.environ.get("KRYO_LAZY_PAGES", "").strip()
+    if lazy:
+        extra.append(f"KRYO_LAZY_PAGES={lazy}")
     if os.geteuid() == 0:
+        if extra:
+            return ["env", *extra, kryo]
         return [kryo]
     sudo = shutil.which("sudo")
     if sudo is None:
         raise PermissionError("kryo snapshot/run need root; sudo not found")
     path = os.environ.get("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin")
-    return [sudo, "-n", "-E", "env", f"PATH={path}", kryo]
+    return [sudo, "-n", "-E", "env", f"PATH={path}", *extra, kryo]
 
 
 def python_command(scenario: str) -> list[str]:
     """Absolute interpreter + scenario script so sudo/uv cannot change cwd meaning."""
-    if scenario not in ALL_SCENARIOS:
+    if scenario not in KNOWN_SCENARIOS:
         raise ValueError(f"Unknown scenario: {scenario}")
     script = (SCENARIOS_DIR / f"{scenario}.py").resolve()
     if not script.exists():
@@ -140,13 +159,100 @@ def kill_stray_scenarios() -> None:
     pkill = shutil.which("pkill")
     if pkill is None:
         return
-    for scenario in ALL_SCENARIOS:
+    for scenario in KNOWN_SCENARIOS:
         script = str((SCENARIOS_DIR / f"{scenario}.py").resolve())
         subprocess.run([pkill, "-9", "-f", script], check=False, capture_output=True)
+    subprocess.run([pkill, "-9", "-f", "criu lazy-pages"], check=False, capture_output=True)
+    subprocess.run([pkill, "-9", "-f", "VLLM::"], check=False, capture_output=True)
 
 
-def run_timed(command: list[str], cwd: Path, timeout: int) -> tuple[float, str]:
+def sudo_prefix() -> list[str]:
+    """Root prefix for privileged bench helpers."""
+    if os.geteuid() == 0:
+        return []
+    sudo = shutil.which("sudo")
+    if sudo is None:
+        raise PermissionError("sudo not found")
+    return [sudo, "-n"]
+
+
+def drop_page_cache() -> None:
+    """Evict file pages so timed runs read weights/snapshots from disk."""
+    drop = Path("/proc/sys/vm/drop_caches")
+    if not drop.is_file():
+        raise RuntimeError("drop_caches is not available (need Linux)")
+    subprocess.run([*sudo_prefix(), "sync"], check=True)
+    result = subprocess.run(
+        [*sudo_prefix(), "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"drop_caches failed: {detail}")
+
+
+def configure_tmpfs_snapshots() -> str:
+    """Put CRIU images on tmpfs. Not used for prod-fair benches."""
+    configured = os.environ.get("KRYO_SNAPSHOTS_DIR", "").strip()
+    if configured:
+        Path(configured).mkdir(parents=True, exist_ok=True)
+        return configured
+
+    shm = Path("/dev/shm")
+    ram = memtotal_bytes()
+    if ram >= 64 * 1024**3 and shutil.which("sudo") is not None:
+        size_kb = max(1, int(ram * 0.7 / 1024))
+        subprocess.run(
+            ["sudo", "-n", "mount", "-o", f"remount,size={size_kb}k", "/dev/shm"],
+            check=False,
+            capture_output=True,
+        )
+
+    target = Path("/dev/shm/kryo-snapshots")
+    if shm.is_dir() and available_bytes(shm) >= 24 * 1024**3:
+        target.mkdir(parents=True, exist_ok=True)
+        os.environ["KRYO_SNAPSHOTS_DIR"] = str(target)
+        return str(target)
+
+    fallback = Path("/tmp/kryo-snapshots")
+    fallback.mkdir(parents=True, exist_ok=True)
+    os.environ["KRYO_SNAPSHOTS_DIR"] = str(fallback)
+    return str(fallback)
+
+
+def available_bytes(path: Path) -> int:
+    """Free bytes on the filesystem that contains path."""
+    try:
+        stats = os.statvfs(path)
+    except OSError:
+        return 0
+    return int(stats.f_bavail * stats.f_frsize)
+
+
+def memtotal_bytes() -> int:
+    """Host RAM from /proc/meminfo, or 0 if unavailable."""
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.is_file():
+        return 0
+    for line in meminfo.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("MemTotal:"):
+            continue
+        fields = line.split()
+        try:
+            return int(fields[1]) * 1024
+        except (IndexError, ValueError):
+            return 0
+    return 0
+
+
+def run_timed(
+    command: list[str], cwd: Path, timeout: int, *, drop_caches: bool = False
+) -> tuple[float, str]:
     """Run a command and return wall-clock seconds plus combined output."""
+    if drop_caches:
+        drop_page_cache()
     started = time.perf_counter()
     proc = subprocess.Popen(
         command,
@@ -171,7 +277,9 @@ def run_timed(command: list[str], cwd: Path, timeout: int) -> tuple[float, str]:
     return elapsed, output or ""
 
 
-def measure_runs(command: list[str], cwd: Path, runs: int, timeout: int) -> dict[str, Any]:
+def measure_runs(
+    command: list[str], cwd: Path, runs: int, timeout: int, *, drop_caches: bool = False
+) -> dict[str, Any]:
     """Time a command `runs` times, dropping the first sample as warmup."""
     samples: list[float] = []
     errors: list[str] = []
@@ -180,7 +288,7 @@ def measure_runs(command: list[str], cwd: Path, runs: int, timeout: int) -> dict
         label = "warmup" if attempt == 0 else f"{attempt}/{runs}"
         print(f"    {label}...", end=" ", flush=True)
         try:
-            elapsed, _ = run_timed(command, cwd, timeout)
+            elapsed, _ = run_timed(command, cwd, timeout, drop_caches=drop_caches)
         except RuntimeError as error:
             print("FAILED")
             message = str(error).strip().splitlines()[-1] if str(error).strip() else str(error)
@@ -204,7 +312,39 @@ def measure_runs(command: list[str], cwd: Path, runs: int, timeout: int) -> dict
     return result
 
 
-def run_scenario(scenario: str, runs: int, timeout: int) -> dict[str, Any]:
+def snapshot_bytes(name: str) -> int | None:
+    """CRIU image size on disk after dump, via `kryo snapshot inspect`."""
+    inspect = subprocess.run(
+        [*kryo_command(), "snapshot", "inspect", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    path_line = next(
+        (line for line in inspect.stdout.splitlines() if line.startswith("Path:")),
+        None,
+    )
+    if path_line is None:
+        return None
+    images = Path(path_line.split(":", 1)[1].strip()) / "images"
+    prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+    du = subprocess.run(
+        [*prefix, "du", "-sb", str(images)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if du.returncode != 0 or not du.stdout.strip():
+        return None
+    try:
+        return int(du.stdout.split()[0])
+    except ValueError:
+        return None
+
+
+def run_scenario(
+    scenario: str, runs: int, timeout: int, *, drop_caches: bool = False
+) -> dict[str, Any]:
     """Create one snapshot, then time cold start vs Kryo restore."""
     python = python_command(scenario)
     kryo = kryo_command()
@@ -212,7 +352,7 @@ def run_scenario(scenario: str, runs: int, timeout: int) -> dict[str, Any]:
     snapshot = f"bench-{scenario}"
 
     print(f"  cold start ({runs} runs, 1 warmup)")
-    cold = measure_runs(python, cwd, runs, timeout)
+    cold = measure_runs(python, cwd, runs, timeout, drop_caches=drop_caches)
 
     print("  creating snapshot")
     subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
@@ -225,12 +365,20 @@ def run_scenario(scenario: str, runs: int, timeout: int) -> dict[str, Any]:
             "kryo": {"error": f"snapshot create failed: {error}"},
         }
 
+    image_bytes = snapshot_bytes(snapshot)
+    if image_bytes is not None:
+        print(f"  snapshot images {image_bytes / (1024**3):.2f} GiB")
+
     print(f"  kryo restore ({runs} runs, 1 warmup)")
-    restored = measure_runs([*kryo, "run", "--snapshot", snapshot], cwd, runs, timeout)
+    restored = measure_runs(
+        [*kryo, "run", "--snapshot", snapshot], cwd, runs, timeout, drop_caches=drop_caches
+    )
     subprocess.run([*kryo, "snapshot", "delete", snapshot], check=False, capture_output=True)
     kill_stray_scenarios()
 
     result: dict[str, Any] = {"cold": cold, "kryo": restored}
+    if image_bytes is not None:
+        result["snapshot_bytes"] = image_bytes
     cold_mean = cold.get("total", {}).get("mean")
     kryo_mean = restored.get("total", {}).get("mean")
     if isinstance(cold_mean, float) and isinstance(kryo_mean, float) and kryo_mean > 0:
@@ -238,14 +386,34 @@ def run_scenario(scenario: str, runs: int, timeout: int) -> dict[str, Any]:
     return result
 
 
-def run_all(scenarios: list[str], runs: int, timeout: int) -> dict[str, Any]:
+def run_all(
+    scenarios: list[str],
+    runs: int,
+    timeout: int,
+    *,
+    drop_caches: bool = True,
+    tmpfs_snapshots: bool = False,
+) -> dict[str, Any]:
     """Run every requested scenario and attach host metadata."""
+    if tmpfs_snapshots:
+        snapshots_dir = configure_tmpfs_snapshots()
+    else:
+        configured = os.environ.get("KRYO_SNAPSHOTS_DIR", "").strip()
+        snapshots_dir = configured or "default-disk"
+    if not os.environ.get("KRYO_LAZY_PAGES", "").strip():
+        os.environ["KRYO_LAZY_PAGES"] = "0"
+    print(f"  snapshots dir {snapshots_dir}")
+    print(f"  lazy pages {os.environ.get('KRYO_LAZY_PAGES')}")
+    print(f"  drop page cache {drop_caches}")
     version = kryo_version()
     results: dict[str, Any] = {
         "metadata": {
             "timestamp": datetime.now(UTC).isoformat(),
             "runs_per_mode": runs,
             "timeout_seconds": timeout,
+            "snapshots_dir": snapshots_dir,
+            "lazy_pages": os.environ.get("KRYO_LAZY_PAGES", ""),
+            "drop_caches": drop_caches,
             **gpu_metadata(),
         },
         "scenarios": {},
@@ -264,7 +432,9 @@ def run_all(scenarios: list[str], runs: int, timeout: int) -> dict[str, Any]:
     for scenario in scenarios:
         print(f"\nScenario: {scenario}")
         try:
-            results["scenarios"][scenario] = run_scenario(scenario, runs, timeout)
+            results["scenarios"][scenario] = run_scenario(
+                scenario, runs, timeout, drop_caches=drop_caches
+            )
         except (ValueError, OSError, RuntimeError) as error:
             print(f"  Error: {error}")
             results["scenarios"][scenario] = {"error": str(error)}
@@ -275,8 +445,12 @@ def run_all(scenarios: list[str], runs: int, timeout: int) -> dict[str, Any]:
 def main() -> None:
     """CLI entrypoint for cold vs Kryo restore benchmarks."""
     parser = argparse.ArgumentParser(description="Run Kryo with/without snapshot benchmarks")
-    parser.add_argument("--scenario", choices=ALL_SCENARIOS, help="Single scenario")
-    parser.add_argument("--all", action="store_true", help="Run all scenarios")
+    parser.add_argument("--scenario", choices=KNOWN_SCENARIOS, help="Single scenario")
+    parser.add_argument(
+        "--scenarios",
+        help="Comma-separated scenarios (includes optional probes like qwen7,vllm_engine,torch_compile)",
+    )
+    parser.add_argument("--all", action="store_true", help="Run release scenarios only")
     parser.add_argument("--runs", type=int, default=10, help="Timed runs per mode (default: 10)")
     parser.add_argument(
         "--timeout",
@@ -285,6 +459,17 @@ def main() -> None:
         help=f"Seconds before a hung run is killed (default: {DEFAULT_TIMEOUT_SECONDS})",
     )
     parser.add_argument("--output", type=str, default=None, help="JSON output path")
+    parser.add_argument(
+        "--drop-caches",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Drop the Linux page cache before each timed run (default: on)",
+    )
+    parser.add_argument(
+        "--tmpfs-snapshots",
+        action="store_true",
+        help="Store CRIU images on tmpfs (not prod-fair; default is disk)",
+    )
     args = parser.parse_args()
 
     if args.runs < 1:
@@ -294,14 +479,25 @@ def main() -> None:
 
     if args.scenario:
         scenarios = [args.scenario]
+    elif args.scenarios:
+        scenarios = [item.strip() for item in args.scenarios.split(",") if item.strip()]
+        unknown = [item for item in scenarios if item not in KNOWN_SCENARIOS]
+        if unknown:
+            parser.error(f"unknown scenarios: {', '.join(unknown)}")
     elif args.all:
         scenarios = ALL_SCENARIOS
     else:
         parser.print_help()
-        print("\nError: Must specify --scenario or --all")
+        print("\nError: Must specify --scenario, --scenarios, or --all")
         sys.exit(1)
 
-    results = run_all(scenarios, args.runs, args.timeout)
+    results = run_all(
+        scenarios,
+        args.runs,
+        args.timeout,
+        drop_caches=args.drop_caches,
+        tmpfs_snapshots=args.tmpfs_snapshots,
+    )
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     output_path = Path(args.output) if args.output else RESULTS_DIR / "latest.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)

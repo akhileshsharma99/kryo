@@ -31,11 +31,24 @@ Dispatch without `tag` only uploads Actions artifacts. Bench failure does not un
 
 ## Local orchestrator
 
-Needs `LAMBDA_API_KEY`, `ssh`, `ssh-keygen`, and `rsync`:
+Needs `ssh`, `ssh-keygen`, `rsync`, and the Doppler CLI (`kryo` / `dev_personal`). GitHub Actions still uses the `LAMBDA_API_KEY` repo secret.
 
 ```bash
-export LAMBDA_API_KEY=...
-python3 ci/benchmark/run.py --runs 10 --gpu auto
+doppler run -- python3 -u ci/benchmark/run.py --runs 10 --gpu auto
+doppler run -- python3 -u ci/benchmark/run.py \
+  --gpu gpu_1x_h100_pcie --scenarios qwen7,vllm_engine,torch_compile --runs 3 --timeout 900
 ```
+
+Keep one VM up so later runs skip boot and `setup.sh` (~10+ minutes):
+
+```bash
+doppler run -- python3 -u ci/benchmark/run.py --keep --setup-only \
+  --gpu gpu_1x_h100_pcie --scenarios qwen7,qwen32
+doppler run -- python3 -u ci/benchmark/run.py --reuse --skip-setup \
+  --scenarios qwen7 --runs 3 --timeout 600 --output /tmp/kryo-large.json
+doppler run -- python3 -u ci/benchmark/run.py --destroy
+```
+
+`--keep` names the instance `kryo-dev` (the janitor only kills `kryo-gha-*`). SSH state lives in gitignored `ci/benchmark/.session/`. `--reuse` rsyncs this checkout, then runs the bench. `--skip-setup` skips CRIU/cuda-checkpoint/Kryo install.
 
 `--gpu gpu_1x_a10` / `--gpu gpu_1x_h100` forces a type. `auto` picks the first in-stock 1x GPU from a cheap-first list.

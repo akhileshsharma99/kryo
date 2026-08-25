@@ -26,6 +26,11 @@ pub struct Snapshot {
 impl Snapshot {
     /// Get the default snapshots directory
     pub fn default_base_dir() -> PathBuf {
+        if let Some(dir) = std::env::var_os("KRYO_SNAPSHOTS_DIR") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir);
+            }
+        }
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".kryo")

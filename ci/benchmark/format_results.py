@@ -13,6 +13,8 @@ SCENARIO_LABELS = {
     "torch_cuda": "PyTorch CUDA",
     "yolo": "YOLOv8n",
     "qwen": "Qwen 2.5-0.5B",
+    "qwen7": "Qwen 2.5-7B",
+    "qwen32": "Qwen 2.5-32B",
     "whisper": "Whisper-tiny",
 }
 

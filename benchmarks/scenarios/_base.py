@@ -12,5 +12,13 @@ def maybe_checkpoint() -> None:
     and other CUDA apps can deadlock joining threads after CRIU restore.
     """
     if os.environ.get("KRYO_CLI_PID"):
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
         checkpoint()
     os._exit(0)

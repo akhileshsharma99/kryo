@@ -12,6 +12,14 @@ Do not run this on Modal or other serverless hosts: they snapshot their own cont
 | `yolo` | YOLOv8n load + one predict |
 | `qwen` | Qwen 2.5-0.5B load + warmup generate |
 | `whisper` | Whisper-tiny load + dummy transcription |
+| `qwen7` | Qwen 2.5-7B load + warmup generate (optional) |
+| `qwen32` | Qwen 2.5-32B load + warmup generate (optional, 80GB GPU) |
+| `vllm_engine` | vLLM engine + CUDA-graph capture on Qwen 2.5-7B (optional) |
+| `torch_compile` | `torch.compile` (Triton kernels / CUDA graphs) on Qwen 2.5-7B (optional) |
+
+Release CI runs `--all` (the first four). The rest are production-like probes.
+
+Each timed run **drops the Linux page cache** first so weights and snapshots are read from disk, like a new pod on a node that has the files in the image but not in RAM. `--no-drop-caches` restores the old in-RAM behavior. Snapshots stay on disk (`~/.kryo/snapshots`); `--tmpfs-snapshots` is only for I/O experiments.
 
 Each scenario warms CUDA, then calls `kryo.checkpoint()` when launched under the Kryo CLI. After the checkpoint the process `_exit`s so timings measure time-to-ready, not interpreter shutdown.
 

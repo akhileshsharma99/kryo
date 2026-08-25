@@ -319,21 +319,28 @@ fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("Snapshot '{}' has no checkpoint images", snapshot_name).into());
     }
 
-    // Restore the process with CRIU (detached mode)
     let criu = Criu::new(&images_dir);
-    let root_pid = criu.restore_detached()?;
-    let workload_pid = snapshot.metadata.workload_pid.unwrap_or(root_pid);
+    let mut lazy_daemon = None;
+    if Criu::lazy_pages_requested() {
+        lazy_daemon = Some(criu.start_lazy_pages()?);
+    }
 
-    // Resume CUDA state
-    CudaCheckpoint::toggle(workload_pid)?;
+    let run_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let root_pid = criu.restore_detached(lazy_daemon.is_some())?;
+        let workload_pid = snapshot.metadata.workload_pid.unwrap_or(root_pid);
 
-    // Wake up the restored process
-    send_signal(workload_pid, libc::SIGUSR2)?;
+        CudaCheckpoint::toggle(workload_pid)?;
+        send_signal(workload_pid, libc::SIGUSR2)?;
+        wait_for_process(root_pid)?;
+        Ok(())
+    })();
 
-    // Wait for the restored process to complete
-    wait_for_process(root_pid)?;
+    if let Some(mut daemon) = lazy_daemon {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
 
-    Ok(())
+    run_result
 }
 
 struct ChildGuard {
