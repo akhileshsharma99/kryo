@@ -19,16 +19,15 @@ from statistics import mean, stdev
 from typing import Any
 
 from config import LLM_SCENARIOS, VLLM_SCENARIOS, BenchPlan, Job
+from golden import apply_command, nfs_path, read_digest_command, write_digest_command
+from golden import digest as golden_digest
+from golden import local_path as golden_local_path
+from golden import pack_command as pack_golden_command
 from providers import get_provider
 from providers.base import Machine, Provider
 from snapshots import digest as snapshot_digest
-from snapshots import (
-    pack_command,
-    read_hash_command,
-    tarball_path,
-    unpack_command,
-    write_hash_command,
-)
+from snapshots import pack_command as pack_snapshot_command
+from snapshots import read_hash_command, tarball_path, unpack_command, write_hash_command
 
 print = partial(print, flush=True)
 
@@ -63,10 +62,17 @@ class Pooled:
 class MachinePool:
     """Reuse VMs up to per-SKU caps; reap them after idle_timeout."""
 
-    def __init__(self, provider: Provider, caps: dict[str, int], idle_timeout: int) -> None:
+    def __init__(
+        self,
+        provider: Provider,
+        caps: dict[str, int],
+        idle_timeout: int,
+        filesystem: str | None = None,
+    ) -> None:
         self._provider = provider
         self._caps = caps
         self._idle_timeout = idle_timeout
+        self._filesystem = filesystem
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._machines: list[Pooled] = []
@@ -96,7 +102,7 @@ class MachinePool:
                     self._cv.wait(timeout=1)
                     continue
             if launch:
-                machine = self._provider.launch(sku)
+                machine = self._provider.launch(sku, filesystem=self._filesystem)
                 pooled = Pooled(machine=machine, busy=True)
                 with self._cv:
                     self._machines.append(pooled)
@@ -216,11 +222,68 @@ def rebuild_kryo() -> str:
     )
 
 
-def ensure_golden(provider: Provider, pooled: Pooled, job: Job) -> None:
-    """Untimed image bring-up: setup.sh once, then downloads for this scenario."""
+def probe_driver(provider: Provider, machine: Machine) -> tuple[str, str]:
+    """NVIDIA driver and CUDA version reported by nvidia-smi."""
+    driver = provider.run_output(
+        machine,
+        "nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1",
+    ).strip()
+    cuda = provider.run_output(
+        machine,
+        r"nvidia-smi | sed -n 's/.*CUDA Version: \([0-9]\+\.[0-9]\+\).*/\1/p' | head -n1",
+    ).strip()
+    return driver, cuda
+
+
+def extra_weights(provider: Provider, machine: Machine, job: Job) -> bool:
+    """Download scenario weights and install vLLM if needed. Returns True if vLLM was installed."""
+    if job.scenario in LLM_SCENARIOS:
+        flag = shlex.quote(job.scenario)
+        provider.run(
+            machine,
+            f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python download_models.py --scenario {flag}",
+            timeout=7200,
+        )
+    if job.scenario not in VLLM_SCENARIOS:
+        return False
+    have = provider.run_output(machine, f"sudo test -f {VLLM_STAMP} && echo yes || echo no").strip()
+    if have == "yes":
+        return False
+    provider.run(
+        machine,
+        f"bash {REPO_REMOTE}/ci/benchmark/install_vllm.sh {REPO_REMOTE} && "
+        f"sudo mkdir -p /var/lib/kryo-bench && sudo touch {VLLM_STAMP}",
+        timeout=1800,
+    )
+    return True
+
+
+def save_golden(
+    provider: Provider, machine: Machine, sku: str, wanted: str, plan: BenchPlan
+) -> None:
+    """Pack the golden image onto NFS and/or the controller. Untimed."""
+    dest = "/tmp/kryo-golden.tgz"
+    if plan.golden.store == "filesystem" and machine.filesystem:
+        dest = nfs_path(machine.filesystem, sku, wanted)
+        parent = dest.rsplit("/", 1)[0]
+        provider.run(machine, f"mkdir -p {shlex.quote(parent)}")
+    print(f"packing golden to {dest}")
+    provider.run(machine, pack_golden_command(dest), timeout=3600)
+    if dest == "/tmp/kryo-golden.tgz":
+        cache = golden_local_path(sku, wanted)
+        provider.get(machine, dest, cache)
+        print(f"golden cached locally {cache.name}")
+
+
+def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> None:
+    """Untimed image bring-up: restore a golden tarball, or run setup.sh once."""
     machine = pooled.machine
     provider.rsync(machine)
-    if not pooled.golden:
+    if pooled.golden:
+        extra_weights(provider, machine, job)
+        return
+
+    if plan.golden.mode == "setup":
         stamped = provider.run_output(
             machine, f"sudo test -f {GOLDEN_STAMP} && echo yes || echo no"
         ).strip()
@@ -235,24 +298,55 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job) -> None:
             print(f"golden hit on {machine.id}; rebuilding kryo")
             provider.run(machine, rebuild_kryo(), timeout=600)
         pooled.golden = True
-    if job.scenario in LLM_SCENARIOS:
-        flag = shlex.quote(job.scenario)
+        extra_weights(provider, machine, job)
+        return
+
+    driver, cuda = probe_driver(provider, machine)
+    wanted = golden_digest(machine.sku, driver, cuda)
+    on_box = provider.run_output(machine, read_digest_command()).strip()
+    if on_box == wanted:
+        print(f"golden digest hit on {machine.id} {wanted}")
+        provider.run(machine, rebuild_kryo(), timeout=600)
+        pooled.golden = True
+        extra_weights(provider, machine, job)
+        return
+
+    applied = False
+    if machine.filesystem:
+        nfs = nfs_path(machine.filesystem, machine.sku, wanted)
+        have = provider.run_output(
+            machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
+        ).strip()
+        if have == "yes":
+            print(f"golden hit filesystem {nfs}")
+            provider.run(machine, apply_command(nfs), timeout=1800)
+            applied = True
+
+    cache = golden_local_path(machine.sku, wanted)
+    if not applied and cache.is_file():
+        print(f"golden hit local cache {cache.name}")
+        provider.put(machine, cache, "/tmp/kryo-golden.tgz")
+        provider.run(machine, apply_command("/tmp/kryo-golden.tgz"), timeout=1800)
+        applied = True
+
+    if not applied:
+        print(f"golden miss {wanted}; running setup.sh")
         provider.run(
             machine,
-            f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python download_models.py --scenario {flag}",
-            timeout=7200,
+            f"bash {REPO_REMOTE}/ci/benchmark/setup.sh {REPO_REMOTE}",
+            timeout=3600,
         )
-    if job.scenario in VLLM_SCENARIOS:
-        have = provider.run_output(
-            machine, f"sudo test -f {VLLM_STAMP} && echo yes || echo no"
-        ).strip()
-        if have != "yes":
-            provider.run(
-                machine,
-                f"bash {REPO_REMOTE}/ci/benchmark/install_vllm.sh {REPO_REMOTE} && "
-                f"sudo mkdir -p /var/lib/kryo-bench && sudo touch {VLLM_STAMP}",
-                timeout=1800,
-            )
+    else:
+        provider.run(machine, rebuild_kryo(), timeout=600)
+
+    provider.run(machine, write_digest_command(wanted))
+    installed_vllm = extra_weights(provider, machine, job)
+    if plan.golden.mode == "tarball" and (not applied or installed_vllm):
+        try:
+            save_golden(provider, machine, machine.sku, wanted, plan)
+        except Exception as error:
+            print(f"warning: could not save golden tarball: {error}")
+    pooled.golden = True
 
 
 def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job) -> int | None:
@@ -293,7 +387,7 @@ def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job) -> int | None:
         timeout=job.timeout + 120,
     )
     provider.run(machine, write_hash_command(job.scenario, wanted))
-    provider.run(machine, pack_command(job.scenario), timeout=600)
+    provider.run(machine, pack_snapshot_command(job.scenario), timeout=600)
     partial = cache.with_suffix(".partial")
     provider.get(machine, "/tmp/kryo-snap.tgz", partial)
     partial.replace(cache)
@@ -334,11 +428,13 @@ def run_timed_once(
     return data
 
 
-def run_sample(provider: Provider, pooled: Pooled, sample: Sample) -> dict[str, Any]:
+def run_sample(
+    provider: Provider, pooled: Pooled, sample: Sample, plan: BenchPlan
+) -> dict[str, Any]:
     """Untimed prepare, then timed cold and timed restore."""
     job = sample.job
     print(f"sample {job.scenario}[{sample.index + 1}/{job.samples}] on {pooled.machine.id}")
-    ensure_golden(provider, pooled, job)
+    ensure_golden(provider, pooled, job, plan)
     image_bytes = ensure_snapshot(provider, pooled, job)
     work = Path("/tmp")
     cold_json = work / f"kryo-cold-{job.scenario}-{sample.index}.json"
@@ -411,6 +507,8 @@ def aggregate(
         "provider": plan.provider,
         "idle_timeout": plan.idle_timeout,
         "caps": plan.caps,
+        "golden_mode": plan.golden.mode,
+        "golden_store": plan.golden.store,
         "drop_caches": True,
         "warmup": False,
     }
@@ -427,7 +525,12 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
     """Execute every sample in the plan and write aggregated JSON."""
     provider = get_provider(plan.provider)
     provider.janitor()
-    pool = MachinePool(provider, plan.caps, plan.idle_timeout)
+    fs = (
+        plan.golden.filesystem
+        if plan.golden.mode == "tarball" and plan.golden.store == "filesystem"
+        else None
+    )
+    pool = MachinePool(provider, plan.caps, plan.idle_timeout, filesystem=fs)
     pending: queue.Queue[Sample | None] = queue.Queue()
     for job in plan.jobs:
         for index in range(job.samples):
@@ -446,7 +549,7 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
             try:
                 pooled = pool.acquire(sample.job.gpu)
                 try:
-                    row = run_sample(provider, pooled, sample)
+                    row = run_sample(provider, pooled, sample, plan)
                 finally:
                     pool.release(pooled)
                 with lock:

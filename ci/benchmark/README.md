@@ -48,11 +48,21 @@ doppler run -- uv run --directory ci/benchmark python -u run.py --destroy
 session. `--keep` leaves the pool running when the process exits (you must
 `--destroy` later).
 
-On the VM, `setup.sh` writes `/var/lib/kryo-bench/golden.stamp`. Later samples
-on that box skip bootstrap and only rebuild Kryo after rsync. Snapshot tarballs
-are cached on the controller under gitignored `ci/benchmark/.snapshots/` and
-reused when the scenario script, weights id, Kryo version, GPU SKU, and driver
-match.
+On a **new** VM the scheduler restores a golden tarball (CRIU, cuda-checkpoint,
+Rust/uv, CUDA torch venv, HuggingFace cache) instead of running `setup.sh`
+again. Lambda cannot snapshot the root disk as a custom AMI, so the tarball
+lives on a persistent filesystem attached at launch (`/lambda/nfs/kryo-golden`).
+CRIU GPU snapshots stay out of that image; they are cached separately under
+`.snapshots/`.
+
+The first run in a region still pays `setup.sh`, then packs the tarball. Later
+CI jobs and idle-reaped replacements apply it and only rebuild Kryo. Filesystem
+storage is billed by Lambda; `golden.mode: setup` disables packing if you do
+not want that.
+
+Snapshot tarballs are also cached on the controller under gitignored
+`ci/benchmark/.snapshots/` and reused when the scenario script, weights id,
+Kryo version, GPU SKU, and driver match.
 
 Timed runs use `benchmarks/.venv/bin/python`, not `uv run`.
 

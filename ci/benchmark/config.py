@@ -41,9 +41,16 @@ DEFAULT_RETRIES = 2
 
 @dataclass(frozen=True)
 class GoldenConfig:
-    """How to bring a fresh VM to a runnable image. `setup` is setup.sh."""
+    """How to bring a fresh VM to a runnable image.
 
-    mode: str = "setup"
+    `setup` always runs setup.sh.
+    `tarball` restores a packed image (local cache and/or a Lambda filesystem).
+    CRIU GPU snapshots are not part of the golden image.
+    """
+
+    mode: str = "tarball"
+    store: str = "filesystem"
+    filesystem: str = "kryo-golden"
 
 
 @dataclass(frozen=True)
@@ -162,9 +169,19 @@ def load_plan(path: Path) -> BenchPlan:
     idle = parse_duration(data.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
     golden_raw = data.get("golden") or {}
     golden_map = _require_mapping(golden_raw, "golden") if golden_raw else {}
-    golden_mode = golden_map.get("mode", "setup")
-    if golden_mode != "setup":
-        raise ValueError(f"unsupported golden.mode: {golden_mode!r} (only setup)")
+    golden_mode = str(golden_map.get("mode", "tarball"))
+    if golden_mode not in {"setup", "tarball"}:
+        raise ValueError(f"unsupported golden.mode: {golden_mode!r} (setup or tarball)")
+    default_store = "filesystem" if golden_mode == "tarball" else "local"
+    golden_store = str(golden_map.get("store", default_store))
+    if golden_store not in {"local", "filesystem"}:
+        raise ValueError(f"unsupported golden.store: {golden_store!r} (local or filesystem)")
+    if golden_mode == "setup":
+        golden_store = "local"
+    filesystem_raw = golden_map.get("filesystem", "kryo-golden")
+    if not isinstance(filesystem_raw, str) or not filesystem_raw.strip():
+        raise ValueError("golden.filesystem must be a non-empty string")
+    filesystem = filesystem_raw.strip()
     snap_raw = data.get("snapshots") or {}
     snap_map = _require_mapping(snap_raw, "snapshots") if snap_raw else {}
     store = snap_map.get("store", "local")
@@ -183,7 +200,11 @@ def load_plan(path: Path) -> BenchPlan:
         provider=provider.strip(),
         idle_timeout=idle,
         caps=caps,
-        golden=GoldenConfig(mode="setup"),
+        golden=GoldenConfig(
+            mode=golden_mode,
+            store=golden_store,
+            filesystem=filesystem,
+        ),
         snapshots=SnapshotConfig(store="local"),
         jobs=jobs,
     )

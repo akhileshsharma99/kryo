@@ -6,7 +6,9 @@ provider: lambda
 caps:
   gpu_1x_a10: 1
 golden:
-  mode: setup
+  mode: tarball
+  store: filesystem
+  filesystem: kryo-golden
 snapshots:
   store: local
 jobs:

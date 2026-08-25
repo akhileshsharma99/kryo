@@ -34,6 +34,7 @@ select = [
 "run.py" = ["T201", "S603", "S310", "S607", "E402"]
 "scheduler.py" = ["T201", "S603", "S310", "S607", "S108"]
 "snapshots.py" = ["S108"]
+"golden.py" = ["S108"]
 "providers/*.py" = ["T201", "S603", "S310", "S607"]
 "test_*.py" = ["S101", "S108", "E402"]
 

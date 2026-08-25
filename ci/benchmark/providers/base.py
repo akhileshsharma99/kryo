@@ -14,6 +14,8 @@ class Machine:
     id: str
     sku: str
     name: str
+    region: str = ""
+    filesystem: str = ""
 
 
 class Provider(Protocol):
@@ -22,8 +24,12 @@ class Provider(Protocol):
     def janitor(self) -> None:
         """Terminate leaked CI instances from crashed controller runs."""
 
-    def launch(self, sku: str) -> Machine:
-        """Create a VM of this SKU (or `auto`) and wait until SSH works."""
+    def launch(self, sku: str, filesystem: str | None = None) -> Machine:
+        """Create a VM of this SKU (or `auto`) and wait until SSH works.
+
+        If filesystem is set, attach (and create if needed) a persistent disk
+        in the launch region so golden tarballs survive VM teardown.
+        """
 
     def rsync(self, machine: Machine) -> None:
         """Copy the Kryo checkout onto the VM."""

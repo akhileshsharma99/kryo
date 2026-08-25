@@ -54,6 +54,7 @@ benchmarks/results/latest.json
 benchmarks/scenarios/*.pt
 ci/benchmark/.session/
 ci/benchmark/.snapshots/
+ci/benchmark/.golden/
 
 # Added by cargo
 

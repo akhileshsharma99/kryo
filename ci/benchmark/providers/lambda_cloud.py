@@ -184,23 +184,93 @@ def delete_ssh_key(key_id: str) -> None:
         print(f"warning: could not delete SSH key {key_id}: {error}", file=sys.stderr)
 
 
-def launch_instance(instance_type: str, region: str, ssh_key_name: str, name: str) -> str:
+def launch_instance(
+    instance_type: str,
+    region: str,
+    ssh_key_name: str,
+    name: str,
+    file_systems: list[str] | None = None,
+) -> str:
     """Launch one instance and return its id."""
-    data = request(
-        "POST",
-        "/instance-operations/launch",
-        {
-            "region_name": region,
-            "instance_type_name": instance_type,
-            "ssh_key_names": [ssh_key_name],
-            "quantity": 1,
-            "name": name,
-        },
-    ).get("data", {})
+    body: dict[str, Any] = {
+        "region_name": region,
+        "instance_type_name": instance_type,
+        "ssh_key_names": [ssh_key_name],
+        "quantity": 1,
+        "name": name,
+    }
+    if file_systems:
+        body["file_system_names"] = file_systems
+    data = request("POST", "/instance-operations/launch", body).get("data", {})
     ids = data.get("instance_ids") or []
     if not ids or not isinstance(ids[0], str):
         raise LambdaError(f"launch did not return an instance id: {data}")
     return ids[0]
+
+
+def _filesystem_region(item: dict[str, Any]) -> str:
+    """Read the region name from a file-systems API record."""
+    raw = item.get("region")
+    if isinstance(raw, dict):
+        nested = raw.get("name")
+        if isinstance(nested, str):
+            return nested
+    if isinstance(raw, str):
+        return raw
+    name = item.get("region_name")
+    if isinstance(name, str):
+        return name
+    return ""
+
+
+def list_filesystems() -> list[dict[str, Any]]:
+    """List persistent Lambda filesystems."""
+    for path in ("/file-systems", "/filesystems"):
+        try:
+            data = request("GET", path).get("data", [])
+        except LambdaError:
+            continue
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+    return []
+
+
+def filesystem_in_region(name: str, region: str) -> bool:
+    """True if a filesystem with this name already exists in the region."""
+    return any(
+        item.get("name") == name and _filesystem_region(item) == region
+        for item in list_filesystems()
+    )
+
+
+def ensure_filesystem(name: str, region: str) -> str:
+    """Create a regional filesystem if needed. Returns the name to attach, or empty."""
+    if filesystem_in_region(name, region):
+        return name
+    regional = f"{name}-{region}"
+    if filesystem_in_region(regional, region):
+        return regional
+    for candidate, body in (
+        (name, {"name": name, "region": region}),
+        (name, {"name": name, "region_name": region}),
+        (regional, {"name": regional, "region": region}),
+        (regional, {"name": regional, "region_name": region}),
+    ):
+        try:
+            request("POST", "/file-systems", body)
+            print(f"created filesystem {candidate} in {region}")
+            return candidate
+        except LambdaError:
+            try:
+                request("POST", "/filesystems", body)
+                print(f"created filesystem {candidate} in {region}")
+                return candidate
+            except LambdaError:
+                if filesystem_in_region(candidate, region):
+                    return candidate
+                continue
+    print(f"warning: could not create filesystem {name} in {region}; golden stays ephemeral")
+    return ""
 
 
 def get_instance(instance_id: str) -> dict[str, Any]:
@@ -469,7 +539,7 @@ class LambdaProvider:
         """Terminate leftover kryo-gha-* instances."""
         terminate_leaked()
 
-    def launch(self, sku: str) -> Machine:
+    def launch(self, sku: str, filesystem: str | None = None) -> Machine:
         """Create a VM, wait for SSH, and remember the connection."""
         with self._lock:
             self._seq += 1
@@ -478,19 +548,34 @@ class LambdaProvider:
         instance_name = f"{INSTANCE_NAME_PREFIX}-{run_id}-{seq}"
         ssh_key_name = f"{SSH_KEY_PREFIX}-{run_id}-{seq}"
         instance_type, region = choose_instance_type(sku)
-        print(f"using {instance_type} in {region}")
+        attached = ""
+        if filesystem:
+            attached = ensure_filesystem(filesystem, region)
+        print(f"using {instance_type} in {region}" + (f" fs={attached}" if attached else ""))
         persist_dir = Path(tempfile.mkdtemp(prefix="kryo-bench-"))
         identity, public_key = generate_ssh_key(persist_dir)
         key_id = add_ssh_key(ssh_key_name, public_key)
         try:
-            instance_id = launch_instance(instance_type, region, ssh_key_name, instance_name)
+            instance_id = launch_instance(
+                instance_type,
+                region,
+                ssh_key_name,
+                instance_name,
+                file_systems=[attached] if attached else None,
+            )
             ip = wait_for_ip(instance_id)
             wait_for_ssh(identity, ip)
         except Exception:
             delete_ssh_key(key_id)
             shutil.rmtree(persist_dir, ignore_errors=True)
             raise
-        machine = Machine(id=instance_id, sku=instance_type, name=instance_name)
+        machine = Machine(
+            id=instance_id,
+            sku=instance_type,
+            name=instance_name,
+            region=region,
+            filesystem=attached,
+        )
         with self._lock:
             self._conns[machine.id] = _Conn(
                 identity=identity,
@@ -539,6 +624,8 @@ class LambdaProvider:
                 "ci/benchmark/.session",
                 "--exclude",
                 "ci/benchmark/.snapshots",
+                "--exclude",
+                "ci/benchmark/.golden",
                 f"{REPO_ROOT}/",
                 f"{SSH_USER}@{conn.ip}:{REPO_REMOTE}/",
             ],

@@ -12,6 +12,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from config import load_plan, parse_duration
+from golden import digest as golden_digest
 
 
 class ParseDurationTests(unittest.TestCase):
@@ -37,6 +38,14 @@ class LoadPlanTests(unittest.TestCase):
         self.assertEqual(len(plan.jobs), 4)
         self.assertEqual(plan.jobs[0].scenario, "torch_cuda")
         self.assertEqual(plan.jobs[0].samples, 10)
+        self.assertEqual(plan.golden.mode, "tarball")
+        self.assertEqual(plan.golden.store, "filesystem")
+        self.assertEqual(plan.golden.filesystem, "kryo-golden")
+
+    def test_digest_changes_with_sku(self) -> None:
+        left = golden_digest("gpu_1x_a10", "550.00", "12.8")
+        right = golden_digest("gpu_1x_h100_pcie", "550.00", "12.8")
+        self.assertNotEqual(left, right)
 
     def test_unknown_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
