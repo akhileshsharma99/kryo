@@ -74,6 +74,7 @@ class MachinePool:
         self._caps = caps
         self._idle_timeout = idle_timeout
         self._filesystem = filesystem
+        self._launching: dict[str, int] = {}
         self._lock = threading.Lock()
         self._cv = threading.Condition(self._lock)
         self._machines: list[Pooled] = []
@@ -95,19 +96,29 @@ class MachinePool:
                     item = idle[0]
                     item.busy = True
                     return item
-                count = sum(1 for item in self._machines if item.machine.sku == sku)
+                live = sum(1 for item in self._machines if item.machine.sku == sku)
+                pending_launches = self._launching.get(sku, 0)
                 cap = self._caps.get(sku, 1)
-                if count < cap:
+                if live + pending_launches < cap:
+                    self._launching[sku] = pending_launches + 1
                     launch = True
                 else:
                     self._cv.wait(timeout=1)
                     continue
             if launch:
-                machine = self._provider.launch(sku, filesystem=self._filesystem)
-                pooled = Pooled(machine=machine, busy=True)
-                with self._cv:
-                    self._machines.append(pooled)
-                return pooled
+                try:
+                    machine = self._provider.launch(sku, filesystem=self._filesystem)
+                    pooled = Pooled(machine=machine, busy=True)
+                    with self._cv:
+                        self._machines.append(pooled)
+                        self._launching[sku] = max(0, self._launching.get(sku, 1) - 1)
+                        self._cv.notify_all()
+                    return pooled
+                except BaseException:
+                    with self._cv:
+                        self._launching[sku] = max(0, self._launching.get(sku, 1) - 1)
+                        self._cv.notify_all()
+                    raise
 
     def release(self, pooled: Pooled) -> None:
         """Return a VM to the idle set."""
@@ -548,8 +559,9 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
         else None
     )
     pool = MachinePool(provider, plan.caps, plan.idle_timeout, filesystem=fs)
-    pending: queue.Queue[Sample | None] = queue.Queue()
+    by_sku: dict[str, queue.Queue[Sample | None]] = {}
     for job in plan.jobs:
+        pending = by_sku.setdefault(job.gpu, queue.Queue())
         for index in range(job.samples):
             pending.put(Sample(job=job, index=index))
 
@@ -557,14 +569,14 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
     errors: list[dict[str, str]] = []
     lock = threading.Lock()
 
-    def worker() -> None:
+    def worker(sku: str, pending: queue.Queue[Sample | None]) -> None:
         while True:
             sample = pending.get()
             if sample is None:
                 pending.task_done()
                 return
             try:
-                pooled = pool.acquire(sample.job.gpu)
+                pooled = pool.acquire(sku)
                 try:
                     row = run_sample(provider, pooled, sample, plan)
                 finally:
@@ -592,17 +604,23 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
             finally:
                 pending.task_done()
 
-    workers = max(sum(plan.caps.values()), 1)
-    threads = [
-        threading.Thread(target=worker, name=f"sample-{i}", daemon=True) for i in range(workers)
-    ]
-    for thread in threads:
-        thread.start()
+    threads: list[threading.Thread] = []
+    for sku, pending in by_sku.items():
+        n_workers = min(plan.caps.get(sku, 1), max(pending.qsize(), 1))
+        for index in range(n_workers):
+            thread = threading.Thread(
+                target=worker, args=(sku, pending), name=f"{sku}-{index}", daemon=True
+            )
+            threads.append(thread)
+            thread.start()
     try:
-        pending.join()
+        for pending in by_sku.values():
+            pending.join()
     finally:
-        for _ in threads:
-            pending.put(None)
+        for sku, pending in by_sku.items():
+            n_workers = min(plan.caps.get(sku, 1), 8)
+            for _ in range(n_workers):
+                pending.put(None)
         for thread in threads:
             thread.join(timeout=5)
         pool.shutdown(terminate=not keep)
