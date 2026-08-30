@@ -213,10 +213,7 @@ class MachinePool:
 def _launch_retryable(error: BaseException) -> bool:
     """Capacity and rate-limit errors should wait, not burn sample retries."""
     text = str(error).lower()
-    return any(
-        needle in text
-        for needle in ("no capacity", "429", "rate limited", "rate_limited")
-    )
+    return any(needle in text for needle in ("no capacity", "429", "rate limited", "rate_limited"))
 
 
 def machine_lost(error: BaseException) -> bool:
@@ -454,9 +451,7 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
 
     provider.run(machine, write_digest_command(wanted))
     installed_vllm = extra_weights(provider, machine, job)
-    maybe_save_golden(
-        provider, machine, wanted, plan, force=not applied or installed_vllm
-    )
+    maybe_save_golden(provider, machine, wanted, plan, force=not applied or installed_vllm)
     pooled.golden = True
 
 
@@ -627,7 +622,7 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
                     pool.release(pooled)
                     pooled = None
                 if sample.attempt < job.retries:
-                    delay = min(30 * (2 ** sample.attempt), 120)
+                    delay = min(30 * (2**sample.attempt), 120)
                     print(f"retrying {job.scenario} in {delay}s")
                     time.sleep(delay)
                     pending.put(Sample(job=job, index=0, attempt=sample.attempt + 1))

@@ -180,9 +180,7 @@ def kill_stray_scenarios() -> None:
         prefix = [sudo, "-n"]
     for scenario in KNOWN_SCENARIOS:
         script = str((SCENARIOS_DIR / f"{scenario}.py").resolve())
-        subprocess.run(
-            [*prefix, pkill, "-9", "-f", script], check=False, capture_output=True
-        )
+        subprocess.run([*prefix, pkill, "-9", "-f", script], check=False, capture_output=True)
     subprocess.run(
         [*prefix, pkill, "-9", "-f", "criu lazy-pages"], check=False, capture_output=True
     )

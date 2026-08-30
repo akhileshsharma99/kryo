@@ -25,10 +25,10 @@ _CLI_PID_ENV = "KRYO_CLI_PID"
 
 def _wake_signals() -> list[int]:
     """Signals that mean 'restore finished, continue inference'."""
-    signals = [signal.SIGUSR2]
+    signals: list[int] = [int(signal.SIGUSR2)]
     rt_min = getattr(signal, "SIGRTMIN", None)
     if isinstance(rt_min, int):
-        signals.append(rt_min + 1)
+        signals.append(int(rt_min) + 1)
     return signals
 
 
