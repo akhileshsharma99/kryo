@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/akhileshsharma99/kryo/compare/v0.3.0...v0.4.0) (2026-08-30)
+
+
+### Features
+
+* measure cold vs kryo restore on lambda gpus ([#25](https://github.com/akhileshsharma99/kryo/issues/25)) ([7a5a070](https://github.com/akhileshsharma99/kryo/commit/7a5a070c002a6c98168e076fbadd538bcb33651f))
+
 ## [0.3.0](https://github.com/akhileshsharma99/kryo/compare/v0.2.0...v0.3.0) (2026-08-25)
 
 
