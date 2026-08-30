@@ -188,22 +188,24 @@ Time to first inference on a real NVIDIA GPU: a fresh Python process vs restorin
 <!-- BENCHMARK_RESULTS:START -->
 ![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
 
+release `v0.4.0`
+
 **NVIDIA A10** · Lambda `gpu_1x_a10`
 
 | Scenario | Cold start | Kryo restore | Speedup |
 |----------|------------|--------------|---------|
-| YOLOv8n | 3.51s | 1.58s | 2.2x |
-| PyTorch CUDA | 1.92s | 1.03s | 1.9x |
-| Qwen 2.5-0.5B | 5.70s | 2.56s | 2.2x |
-| Whisper-tiny | 5.20s | 1.76s | 3.0x |
+| PyTorch CUDA | 1.75s | 1.01s | 1.7x |
+| YOLOv8n | 3.40s | 1.44s | 2.4x |
+| Qwen 2.5-0.5B | 5.40s | 2.49s | 2.2x |
+| Whisper-tiny | 5.01s | 1.73s | 2.9x |
 
 **NVIDIA H100** · Lambda `gpu_1x_h100_pcie`
 
 | Scenario | Cold start | Kryo restore | Speedup |
 |----------|------------|--------------|---------|
-| Qwen 2.5-7B | 25.18s | 19.00s | 1.3x |
-| torch.compile Qwen 2.5-7B | 22.46s | 16.77s | 1.3x |
-| Qwen 2.5-32B | 93.69s | 76.75s | 1.2x |
+| Qwen 2.5-7B | 24.11s | 17.19s | 1.4x |
+| torch.compile Qwen 2.5-7B | 26.34s | 17.37s | 1.5x |
+| Qwen 2.5-32B | 110.75s | 79.66s | 1.4x |
 <!-- BENCHMARK_RESULTS:END -->
 
 How these are measured: [benchmarks/](benchmarks/).
