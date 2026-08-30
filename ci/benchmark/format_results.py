@@ -91,9 +91,9 @@ def scenario_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def caption(metadata: object) -> str:
-    """One-line hardware / sample-size summary."""
+    """One-line hardware / sample-size summary. Empty if nothing useful."""
     if not isinstance(metadata, dict):
-        return "Page cache dropped before each timed run."
+        return ""
     parts: list[str] = []
     gpu = metadata.get("gpu")
     if isinstance(gpu, str) and gpu:
@@ -112,12 +112,10 @@ def caption(metadata: object) -> str:
     tag = metadata.get("release_tag")
     if isinstance(tag, str) and tag:
         parts.append(f"release `{tag}`")
-    if not parts:
-        parts.append("Page cache dropped before each timed run")
     note = metadata.get("note")
     line = " · ".join(parts)
     if isinstance(note, str) and note:
-        return f"{line}. {note}"
+        return f"{line}. {note}" if line else note
     return line
 
 
@@ -182,10 +180,11 @@ def readme_block(results: dict[str, Any], image_rel: str) -> str:
     """README section between the result markers."""
     cap = caption(results.get("metadata"))
     table = markdown_results(results)
+    extra = f"{cap}\n\n" if cap else ""
     return (
         f"{README_START}\n"
         f"![Cold start vs Kryo restore]({image_rel})\n\n"
-        f"{cap}\n\n"
+        f"{extra}"
         f"{table}\n"
         f"{README_END}"
     )
@@ -393,10 +392,12 @@ def merge_release_notes(existing: str, section: str) -> str:
 def release_section(results: dict[str, Any], tag: str, repo: str) -> str:
     """Markdown for GitHub release notes, with chart from the release asset."""
     image = f"https://github.com/{repo}/releases/download/{tag}/kryo-benchmarks.svg"
+    cap = caption(results.get("metadata"))
+    extra = f"{cap}\n\n" if cap else ""
     return (
         "## GPU benchmarks\n\n"
         f"![Cold start vs Kryo restore]({image})\n\n"
-        f"{caption(results.get('metadata'))}\n\n"
+        f"{extra}"
         f"{markdown_results(results)}\n"
     )
 
@@ -437,7 +438,9 @@ def main() -> None:
     if args.markdown:
         md_path = Path(args.markdown)
         md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text(f"{caption(results.get('metadata'))}\n\n{table}\n", encoding="utf-8")
+        cap = caption(results.get("metadata"))
+        body = f"{cap}\n\n{table}\n" if cap else f"{table}\n"
+        md_path.write_text(body, encoding="utf-8")
     if args.patch_readme:
         patch_readme(Path(args.patch_readme), results, args.image_rel)
     if args.notes_out:

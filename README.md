@@ -188,8 +188,6 @@ Time to first inference on a real NVIDIA GPU: a fresh Python process vs restorin
 <!-- BENCHMARK_RESULTS:START -->
 ![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
 
-Page cache dropped before each timed run
-
 **NVIDIA A10** · Lambda `gpu_1x_a10`
 
 | Scenario | Cold start | Kryo restore | Speedup |
