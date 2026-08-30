@@ -47,6 +47,22 @@ if [ ! -s "$list" ]; then
 fi
 
 sort -u "$list" -o "$list"
+lock_dir="$(dirname "$OUT")/.lock-$(basename "$OUT")"
+waited=0
+while ! sudo mkdir "$lock_dir" 2>/dev/null; do
+  if [ -f "$OUT/.golden-ok" ]; then
+    echo "golden already packed $OUT"
+    exit 0
+  fi
+  waited=$((waited + 5))
+  if [ "$waited" -ge 3600 ]; then
+    echo "timeout waiting for golden pack lock $lock_dir" >&2
+    exit 1
+  fi
+  sleep 5
+done
+release_lock() { sudo rmdir "$lock_dir" 2>/dev/null || true; }
+trap 'release_lock; cleanup' EXIT
 if [ -f "$OUT/.golden-ok" ]; then
   echo "golden already packed $OUT"
   exit 0

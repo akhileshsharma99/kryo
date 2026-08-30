@@ -549,8 +549,9 @@ def bench_server(
             log(f"    {elapsed:.3f}s  {body}")
             colds.append(elapsed)
         result["cold"] = {
+            "runs": len(colds),
             "samples": colds,
-            "mean": mean(colds),
+            "total": {"mean": mean(colds)},
         }
         wait_seconds = None if signal_checkpoint else max(int(mean(colds)) + 45, 90)
 
@@ -578,9 +579,15 @@ def bench_server(
             )
             log(f"    {elapsed:.3f}s  {body}")
             restores.append(elapsed)
-        result["kryo"] = {"samples": restores, "mean": mean(restores)}
-        if result["kryo"]["mean"] > 0:
-            result["speedup"] = result["cold"]["mean"] / result["kryo"]["mean"]
+        result["kryo"] = {
+            "runs": len(restores),
+            "samples": restores,
+            "total": {"mean": mean(restores)},
+        }
+        cold_mean = result["cold"]["total"]["mean"]
+        kryo_mean = result["kryo"]["total"]["mean"]
+        if kryo_mean > 0:
+            result["speedup"] = cold_mean / kryo_mean
     except Exception as error:
         result["error"] = str(error)
         log(f"  FAILED {error}")
