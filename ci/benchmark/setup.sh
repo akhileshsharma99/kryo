@@ -28,6 +28,7 @@ sudo apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
   git \
+  ninja-build \
   python3 \
   software-properties-common
 

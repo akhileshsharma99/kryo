@@ -6,6 +6,13 @@ REPO="${1:-$HOME/kryo}"
 cd "$REPO"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.cargo/bin:$HOME/.local/bin:${PATH:-}"
 
+# flashinfer JIT-compiles sampling kernels on first generate; vLLM then
+# calls `ninja`. Golden images from older setup.sh do not have it.
+if ! command -v ninja >/dev/null; then
+  sudo apt-get update -qq
+  sudo apt-get install -y --no-install-recommends ninja-build
+fi
+
 ARCH="$(uname -m)"
 VLLM_VERSION="0.27.1"
 # Closest CUDA 12 wheel on current vLLM releases (no cu128 builds).
