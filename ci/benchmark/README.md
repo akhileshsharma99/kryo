@@ -15,10 +15,8 @@ the NVIDIA driver.
 
 | File | GPU | What |
 |------|-----|------|
-| `jobs/release.yaml` | 1× A10 | Tiny models (`torch_cuda`, `yolo`, `qwen` 0.5B, `whisper`). Release CI A10 shard. |
-| `jobs/h100.yaml` | 1× H100 SXM5 | 7B + 32B + vLLM. Release CI H100 shard (parallel with A10). |
-| `jobs/prod-fair.yaml` | 1× H100 SXM5 | 7B probes only (`qwen7`, `torch_compile`, `vllm_engine`). Manual. |
-| `jobs/all.yaml` | A10 + H100 | Local combined controller. Prefer the two shards in GitHub Actions. |
+| `jobs/a10.yaml` | 1× A10 | Tiny models (`torch_cuda`, `yolo`, `qwen` 0.5B, `whisper`). |
+| `jobs/h100.yaml` | 1× H100 SXM5 | 7B + 32B + vLLM. |
 
 Caps in the YAML bound how many VMs of each SKU can exist at once. Idle VMs
 are terminated after `idle_timeout`. The whole process also has a hard stop
@@ -32,8 +30,8 @@ workflow also reaps `kryo-gha-*` VMs older than 4 hours.
 - **GitHub Release** — `release.yml` dispatches `benchmark.yml` with `jobs=all`
   (A10 and H100 in parallel). The publish job merges JSON, updates the README
   chart and table, uploads release assets, and opens a `chore:` PR.
-- **Actions → GPU Benchmark** — `workflow_dispatch`; `all` or a single job file;
-  optional `tag` publishes
+- **Actions → GPU Benchmark** — `workflow_dispatch`; `all`, `a10.yaml`, or
+  `h100.yaml`; optional `tag` publishes
 - **Lambda janitor** — every 30 minutes (`--reap-stale`)
 - **Keepalive** — monthly; re-enables scheduled workflows so GitHub does not
   disable them after 60 days of inactivity on a public repo
@@ -50,7 +48,7 @@ Needs `ssh`, `ssh-keygen`, `rsync`, and the Doppler CLI (`kryo` / `dev_personal`
 GitHub Actions uses the `LAMBDA_API_KEY` repo secret.
 
 ```bash
-doppler run -- uv run --directory ci/benchmark python -u run.py --jobs jobs/release.yaml
+doppler run -- uv run --directory ci/benchmark python -u run.py --jobs jobs/a10.yaml
 doppler run -- uv run --directory ci/benchmark python -u run.py --jobs jobs/h100.yaml
 doppler run -- uv run --directory ci/benchmark python -u run.py --destroy
 doppler run -- uv run --directory ci/benchmark python -u run.py --reap-stale

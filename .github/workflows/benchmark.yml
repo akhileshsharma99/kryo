@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: "all (parallel A10 + H100), or a single file (release.yaml, h100.yaml, prod-fair.yaml)"
+        description: "all (parallel A10 + H100), or a single shard (a10.yaml, h100.yaml)"
         required: false
         default: "all"
       tag:
@@ -27,7 +27,7 @@ concurrency:
 jobs:
   a10:
     name: A10
-    if: inputs.jobs == 'all' || inputs.jobs == 'release.yaml'
+    if: inputs.jobs == 'all' || inputs.jobs == 'a10.yaml'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -47,7 +47,7 @@ jobs:
           export BENCH_GIT_SHA="$(git rev-parse HEAD)"
           uv sync --directory ci/benchmark
           uv run --directory ci/benchmark python -u run.py \
-            --jobs jobs/release.yaml \
+            --jobs jobs/a10.yaml \
             --output ../../benchmarks/results/a10.json
 
       - name: Upload A10 results
@@ -60,7 +60,7 @@ jobs:
 
   h100:
     name: H100
-    if: inputs.jobs == 'all' || inputs.jobs == 'h100.yaml' || inputs.jobs == 'prod-fair.yaml'
+    if: inputs.jobs == 'all' || inputs.jobs == 'h100.yaml'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -78,13 +78,9 @@ jobs:
           BENCH_MAX_SECONDS: "14400"
         run: |
           export BENCH_GIT_SHA="$(git rev-parse HEAD)"
-          FILE="${{ inputs.jobs }}"
-          if [ "$FILE" = "all" ] || [ -z "$FILE" ]; then
-            FILE=h100.yaml
-          fi
           uv sync --directory ci/benchmark
           uv run --directory ci/benchmark python -u run.py \
-            --jobs "jobs/${FILE}" \
+            --jobs jobs/h100.yaml \
             --output ../../benchmarks/results/h100.json
 
       - name: Upload H100 results

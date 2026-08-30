@@ -1,4 +1,4 @@
-# Cheap release CI: one A10, four tiny scenarios, 10 samples each.
+# A10 shard. Tiny models; runs in parallel with jobs/h100.yaml.
 # Downloads and snapshot create are untimed; only time-to-first-inference is measured.
 
 idle_timeout: 10m

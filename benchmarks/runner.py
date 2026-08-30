@@ -222,7 +222,7 @@ def drop_page_cache() -> None:
 
 
 def configure_tmpfs_snapshots() -> str:
-    """Put CRIU images on tmpfs. Not used for prod-fair benches."""
+    """Put CRIU images on tmpfs. Default CI benches keep snapshots on disk."""
     configured = os.environ.get("KRYO_SNAPSHOTS_DIR", "").strip()
     if configured:
         Path(configured).mkdir(parents=True, exist_ok=True)
@@ -676,7 +676,7 @@ def main() -> None:
     parser.add_argument(
         "--tmpfs-snapshots",
         action="store_true",
-        help="Store CRIU images on tmpfs (not prod-fair; default is disk)",
+        help="Store CRIU images on tmpfs (default is disk)",
     )
     parser.add_argument(
         "--once",

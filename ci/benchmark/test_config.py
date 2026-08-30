@@ -46,8 +46,8 @@ class MaxRunSecondsTests(unittest.TestCase):
 
 
 class LoadPlanTests(unittest.TestCase):
-    def test_release_yaml(self) -> None:
-        plan = load_plan(HERE / "jobs" / "release.yaml")
+    def test_a10_yaml(self) -> None:
+        plan = load_plan(HERE / "jobs" / "a10.yaml")
         self.assertEqual(plan.provider, "lambda")
         self.assertEqual(plan.idle_timeout, 600)
         self.assertEqual(plan.caps["gpu_1x_a10"], 1)
@@ -59,13 +59,10 @@ class LoadPlanTests(unittest.TestCase):
         self.assertEqual(plan.golden.filesystem, "kryo-golden")
         self.assertEqual(plan.snapshots.store, "local")
 
-    def test_prod_jobs_use_h100_sxm5(self) -> None:
-        plan = load_plan(HERE / "jobs" / "prod-fair.yaml")
+    def test_h100_yaml(self) -> None:
+        plan = load_plan(HERE / "jobs" / "h100.yaml")
         self.assertEqual(plan.caps["gpu_1x_h100_sxm5"], 1)
         self.assertTrue(all(job.gpu == "gpu_1x_h100_sxm5" for job in plan.jobs))
-
-    def test_h100_yaml_includes_vllm_and_qwen32(self) -> None:
-        plan = load_plan(HERE / "jobs" / "h100.yaml")
         names = [job.scenario for job in plan.jobs]
         self.assertEqual(names, ["qwen7", "torch_compile", "vllm_engine", "qwen32"])
 

@@ -15,7 +15,7 @@ from providers.lambda_cloud import destroy_dev_session, max_age_seconds, termina
 from scheduler import run_plan
 
 REPO_ROOT = HERE.parent.parent
-DEFAULT_JOBS = HERE / "jobs" / "release.yaml"
+DEFAULT_JOBS = HERE / "jobs" / "a10.yaml"
 DEFAULT_OUTPUT = REPO_ROOT / "benchmarks" / "results" / "latest.json"
 
 

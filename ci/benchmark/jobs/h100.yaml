@@ -1,4 +1,4 @@
-# Full H100 shard for release CI. Runs in parallel with jobs/release.yaml (A10).
+# H100 shard. Runs in parallel with jobs/a10.yaml.
 # PCIe is the fallback when SXM5 is out of stock.
 
 idle_timeout: 10m
