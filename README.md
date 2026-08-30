@@ -205,7 +205,6 @@ Page cache dropped before each timed run
 |----------|------------|--------------|---------|
 | Qwen 2.5-7B | 25.18s | 19.00s | 1.3x |
 | torch.compile Qwen 2.5-7B | 22.46s | 16.77s | 1.3x |
-| vLLM Qwen 2.5-7B | — | — | — |
 | Qwen 2.5-32B | 93.69s | 76.75s | 1.2x |
 <!-- BENCHMARK_RESULTS:END -->
 

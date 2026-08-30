@@ -20,10 +20,6 @@ jobs:
     gpu: gpu_1x_h100_sxm5
     samples: 3
     timeout: 900
-  - scenario: vllm_engine
-    gpu: gpu_1x_h100_sxm5
-    samples: 3
-    timeout: 900
   - scenario: qwen32
     gpu: gpu_1x_h100_sxm5
     samples: 2

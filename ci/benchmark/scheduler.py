@@ -19,7 +19,7 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
-from config import LLM_SCENARIOS, VLLM_SCENARIOS, BenchPlan, Job
+from config import LLM_SCENARIOS, BenchPlan, Job
 from golden import apply_command, nfs_path, read_digest_command, write_digest_command
 from golden import digest as golden_digest
 from golden import local_path as golden_local_path
@@ -43,7 +43,6 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 REPO_REMOTE = "kryo"
 GOLDEN_STAMP = "/var/lib/kryo-bench/golden.stamp"
-VLLM_STAMP = "/var/lib/kryo-bench/vllm.stamp"
 REMOTE_SAMPLE = "/tmp/kryo-sample.json"
 
 
@@ -310,27 +309,16 @@ def probe_driver(provider: Provider, machine: Machine) -> tuple[str, str]:
     return driver, cuda
 
 
-def extra_weights(provider: Provider, machine: Machine, job: Job) -> bool:
-    """Download scenario weights and install vLLM if needed. Returns True if vLLM was installed."""
-    if job.scenario in LLM_SCENARIOS:
-        flag = shlex.quote(job.scenario)
-        provider.run(
-            machine,
-            f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python download_models.py --scenario {flag}",
-            timeout=7200,
-        )
-    if job.scenario not in VLLM_SCENARIOS:
-        return False
-    have = provider.run_output(machine, f"sudo test -f {VLLM_STAMP} && echo yes || echo no").strip()
-    if have == "yes":
-        return False
+def extra_weights(provider: Provider, machine: Machine, job: Job) -> None:
+    """Download scenario weights. Untimed."""
+    if job.scenario not in LLM_SCENARIOS:
+        return
+    flag = shlex.quote(job.scenario)
     provider.run(
         machine,
-        f"bash {REPO_REMOTE}/ci/benchmark/install_vllm.sh {REPO_REMOTE} && "
-        f"sudo mkdir -p /var/lib/kryo-bench && sudo touch {VLLM_STAMP}",
-        timeout=1800,
+        f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python download_models.py --scenario {flag}",
+        timeout=7200,
     )
-    return True
 
 
 def save_golden(
@@ -417,8 +405,8 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
         print(f"golden digest hit on {machine.id} {wanted}")
         provider.run(machine, rebuild_kryo(), timeout=600)
         pooled.golden = True
-        installed_vllm = extra_weights(provider, machine, job)
-        maybe_save_golden(provider, machine, wanted, plan, force=installed_vllm)
+        extra_weights(provider, machine, job)
+        maybe_save_golden(provider, machine, wanted, plan)
         return
 
     applied = False
@@ -450,8 +438,8 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
         provider.run(machine, rebuild_kryo(), timeout=600)
 
     provider.run(machine, write_digest_command(wanted))
-    installed_vllm = extra_weights(provider, machine, job)
-    maybe_save_golden(provider, machine, wanted, plan, force=not applied or installed_vllm)
+    extra_weights(provider, machine, job)
+    maybe_save_golden(provider, machine, wanted, plan, force=not applied)
     pooled.golden = True
 
 

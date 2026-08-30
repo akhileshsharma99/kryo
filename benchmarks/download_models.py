@@ -17,7 +17,6 @@ SCENARIO_LLMS = {
     "qwen": "Qwen/Qwen2.5-0.5B",
     "qwen7": "Qwen/Qwen2.5-7B",
     "qwen32": "Qwen/Qwen2.5-32B",
-    "vllm_engine": "Qwen/Qwen2.5-7B",
     "torch_compile": "Qwen/Qwen2.5-7B",
 }
 

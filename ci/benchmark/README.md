@@ -16,7 +16,7 @@ the NVIDIA driver.
 | File | GPU | What |
 |------|-----|------|
 | `jobs/a10.yaml` | 1× A10 | Tiny models (`torch_cuda`, `yolo`, `qwen` 0.5B, `whisper`). |
-| `jobs/h100.yaml` | 1× H100 SXM5 | 7B + 32B + vLLM. |
+| `jobs/h100.yaml` | 1× H100 SXM5 | 7B + 32B. |
 
 Caps in the YAML bound how many VMs of each SKU can exist at once. Idle VMs
 are terminated after `idle_timeout`. The whole process also has a hard stop

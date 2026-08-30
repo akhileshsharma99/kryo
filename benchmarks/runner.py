@@ -34,7 +34,6 @@ ALL_SCENARIOS = [
 OPTIONAL_SCENARIOS = [
     "qwen7",
     "qwen32",
-    "vllm_engine",
     "torch_compile",
 ]
 
@@ -184,7 +183,6 @@ def kill_stray_scenarios() -> None:
     subprocess.run(
         [*prefix, pkill, "-9", "-f", "criu lazy-pages"], check=False, capture_output=True
     )
-    subprocess.run([*prefix, pkill, "-9", "-f", "VLLM::"], check=False, capture_output=True)
     subprocess.run(
         [*prefix, pkill, "-9", "-f", "/usr/local/bin/kryo run"],
         check=False,
@@ -654,7 +652,7 @@ def main() -> None:
     parser.add_argument("--scenario", choices=KNOWN_SCENARIOS, help="Single scenario")
     parser.add_argument(
         "--scenarios",
-        help="Comma-separated scenarios (qwen7, vllm_engine, torch_compile, ...)",
+        help="Comma-separated scenarios (qwen7, torch_compile, ...)",
     )
     parser.add_argument("--all", action="store_true", help="Run release scenarios only")
     parser.add_argument("--runs", type=int, default=10, help="Timed runs per mode (default: 10)")

@@ -22,7 +22,6 @@ SCENARIO_LABELS = {
     "qwen7": "Qwen 2.5-7B",
     "qwen32": "Qwen 2.5-32B",
     "whisper": "Whisper-tiny",
-    "vllm_engine": "vLLM Qwen 2.5-7B",
     "torch_compile": "torch.compile Qwen 2.5-7B",
 }
 

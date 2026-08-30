@@ -15,7 +15,6 @@ KNOWN_SCENARIOS = (
     "whisper",
     "qwen7",
     "qwen32",
-    "vllm_engine",
     "torch_compile",
 )
 
@@ -26,12 +25,10 @@ SCENARIO_WEIGHTS: dict[str, str] = {
     "whisper": "openai/whisper-tiny",
     "qwen7": "Qwen/Qwen2.5-7B",
     "qwen32": "Qwen/Qwen2.5-32B",
-    "vllm_engine": "Qwen/Qwen2.5-7B",
     "torch_compile": "Qwen/Qwen2.5-7B",
 }
 
 LLM_SCENARIOS = frozenset(SCENARIO_WEIGHTS) - {"torch_cuda", "yolo", "whisper"}
-VLLM_SCENARIOS = frozenset({"vllm_engine"})
 
 DEFAULT_IDLE_TIMEOUT = 600
 DEFAULT_TIMEOUT = 90

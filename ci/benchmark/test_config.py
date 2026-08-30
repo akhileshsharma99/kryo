@@ -64,7 +64,7 @@ class LoadPlanTests(unittest.TestCase):
         self.assertEqual(plan.caps["gpu_1x_h100_sxm5"], 1)
         self.assertTrue(all(job.gpu == "gpu_1x_h100_sxm5" for job in plan.jobs))
         names = [job.scenario for job in plan.jobs]
-        self.assertEqual(names, ["qwen7", "torch_compile", "vllm_engine", "qwen32"])
+        self.assertEqual(names, ["qwen7", "torch_compile", "qwen32"])
 
     def test_digest_changes_with_sku(self) -> None:
         left = golden_digest("gpu_1x_a10", "550.00", "12.8")

@@ -16,7 +16,6 @@ Numbers live on the [main README](../README.md). They were measured on NVIDIA A1
 | Whisper-tiny | load weights, one transcription |
 | Qwen 2.5-7B | load weights, first generate |
 | torch.compile on 7B | compile + CUDA graphs, first generate |
-| vLLM on 7B | engine start + CUDA-graph capture, first generate |
 | Qwen 2.5-32B | load weights, first generate (80GB GPU) |
 
 These need Linux, an NVIDIA GPU, CRIU, `cuda-checkpoint`, and root. They will not run on a Mac.

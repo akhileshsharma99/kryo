@@ -11,7 +11,6 @@ SETUP_SCRIPTS = (
     HERE / "setup.sh",
     HERE / "pack_golden.sh",
     HERE / "apply_golden.sh",
-    HERE / "install_vllm.sh",
 )
 DIGEST_FILE = "/var/lib/kryo-bench/golden.digest"
 
