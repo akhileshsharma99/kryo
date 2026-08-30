@@ -1,6 +1,6 @@
 [project]
 name = "kryo-lambda-benchmark"
-version = "0.3.0"
+version = "0.4.0"
 description = "Provision Lambda Cloud GPUs and run Kryo benchmarks"
 requires-python = ">=3.11"
 dependencies = [
