@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Restore a golden tarball onto a stock Lambda GPU image. Not CRIU snapshots.
+# Restore a golden directory onto a stock Lambda GPU image. Not CRIU snapshots.
 set -euo pipefail
 
-SRC="${1:?source .tgz}"
+SRC="${1:?source directory}"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.cargo/bin:$HOME/.local/bin:${PATH:-}"
 
-if [ ! -f "$SRC" ]; then
-  echo "golden tarball missing: $SRC" >&2
+if [ ! -f "$SRC/.golden-ok" ]; then
+  echo "golden directory missing or incomplete: $SRC" >&2
   exit 1
 fi
 
-sudo tar -C / -xzf "$SRC"
+sudo rsync -a "$SRC/" /
 owner="${USER:-ubuntu}"
 sudo chown -R "$owner:$owner" \
   "/home/$owner/.cargo" \

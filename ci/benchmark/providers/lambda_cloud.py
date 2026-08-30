@@ -24,8 +24,8 @@ from providers.base import Machine
 print = partial(print, flush=True)
 
 API_BASE = "https://cloud.lambdalabs.com/api/v1"
-INSTANCE_NAME_PREFIX = "kryo-gha"
-SSH_KEY_PREFIX = "kryo-gha"
+INSTANCE_NAME_PREFIX = os.environ.get("KRYO_VM_PREFIX", "kryo-gha").strip() or "kryo-gha"
+SSH_KEY_PREFIX = INSTANCE_NAME_PREFIX
 SSH_USER = "ubuntu"
 REPO_REMOTE = "kryo"
 DEV_INSTANCE_NAME = "kryo-dev"

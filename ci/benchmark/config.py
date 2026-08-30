@@ -16,6 +16,10 @@ KNOWN_SCENARIOS = (
     "qwen7",
     "qwen32",
     "torch_compile",
+    "vllm7",
+    "vllm32",
+    "triton7",
+    "triton32",
 )
 
 SCENARIO_WEIGHTS: dict[str, str] = {
@@ -26,9 +30,14 @@ SCENARIO_WEIGHTS: dict[str, str] = {
     "qwen7": "Qwen/Qwen2.5-7B",
     "qwen32": "Qwen/Qwen2.5-32B",
     "torch_compile": "Qwen/Qwen2.5-7B",
+    "vllm7": "Qwen/Qwen2.5-7B",
+    "vllm32": "Qwen/Qwen2.5-32B",
+    "triton7": "Qwen/Qwen2.5-7B",
+    "triton32": "Qwen/Qwen2.5-32B",
 }
 
 LLM_SCENARIOS = frozenset(SCENARIO_WEIGHTS) - {"torch_cuda", "yolo", "whisper"}
+SERVER_SCENARIOS = frozenset({"vllm7", "vllm32", "triton7", "triton32"})
 
 DEFAULT_IDLE_TIMEOUT = 600
 DEFAULT_TIMEOUT = 90

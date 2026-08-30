@@ -1,0 +1,30 @@
+# Four H100 VMs. One server+model per machine.
+# 1x SXM5 is preferred; provider falls back to PCIe when SXM5 is out.
+
+idle_timeout: 20m
+provider: lambda
+caps:
+  gpu_1x_h100_sxm5: 4
+golden:
+  mode: tarball
+  store: filesystem
+  filesystem: kryo-golden
+snapshots:
+  store: local
+jobs:
+  - scenario: vllm7
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 900
+  - scenario: vllm32
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 1800
+  - scenario: triton7
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 900
+  - scenario: triton32
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 1800

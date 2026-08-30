@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Pack Kryo bench tools, venv, and weight caches. Not CRIU GPU snapshots.
+# Copy Kryo bench tools, venv, and weight caches onto a directory.
+# No gzip: compressing 32B weights onto NFS was slower than the benches.
 set -euo pipefail
 
-OUT="${1:?destination .tgz}"
+OUT="${1:?destination directory}"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.cargo/bin:$HOME/.local/bin:${PATH:-}"
 
 list="$(mktemp)"
@@ -46,18 +47,15 @@ if [ ! -s "$list" ]; then
 fi
 
 sort -u "$list" -o "$list"
-# Do not mktemp the archive: sudo tar's gzip child cannot write a 0600 file owned by ubuntu.
-tmp="/tmp/kryo-golden.$$.tgz"
-sudo rm -f "$tmp"
-sudo tar -C / --exclude='**/.kryo/snapshots' --exclude='**/__pycache__' \
-  --exclude='./proc' --exclude='./sys' --exclude='./dev' --exclude='./run' \
-  --warning=no-file-changed --ignore-failed-read -czf "$tmp" --files-from="$list"
-sudo chmod 644 "$tmp"
-mkdir -p "$(dirname "$OUT")"
-if [[ "$OUT" == /lambda/nfs/* ]]; then
-  cp "$tmp" "$OUT"
-else
-  sudo mv "$tmp" "$OUT"
+if [ -f "$OUT/.golden-ok" ]; then
+  echo "golden already packed $OUT"
+  exit 0
 fi
-sudo rm -f "$tmp"
-echo "packed golden $OUT ($(du -h "$OUT" | awk '{print $1}'))"
+sudo rm -rf "$OUT"
+sudo mkdir -p "$OUT"
+# --relative keeps /home/ubuntu/... as home/ubuntu/... under $OUT.
+sudo rsync -a --relative --files-from="$list" \
+  --exclude='**/.kryo/snapshots' --exclude='**/__pycache__' \
+  / "$OUT/"
+echo ok | sudo tee "$OUT/.golden-ok" >/dev/null
+echo "packed golden $OUT ($(sudo du -sh "$OUT" | awk '{print $1}'))"

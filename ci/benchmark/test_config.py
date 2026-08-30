@@ -59,12 +59,11 @@ class LoadPlanTests(unittest.TestCase):
         self.assertEqual(plan.golden.filesystem, "kryo-golden")
         self.assertEqual(plan.snapshots.store, "local")
 
-    def test_h100_yaml(self) -> None:
-        plan = load_plan(HERE / "jobs" / "h100.yaml")
-        self.assertEqual(plan.caps["gpu_1x_h100_sxm5"], 1)
-        self.assertTrue(all(job.gpu == "gpu_1x_h100_sxm5" for job in plan.jobs))
+    def test_h100_servers_yaml(self) -> None:
+        plan = load_plan(HERE / "jobs" / "h100-servers.yaml")
+        self.assertEqual(plan.caps["gpu_1x_h100_sxm5"], 4)
         names = [job.scenario for job in plan.jobs]
-        self.assertEqual(names, ["qwen7", "torch_compile", "qwen32"])
+        self.assertEqual(names, ["vllm7", "vllm32", "triton7", "triton32"])
 
     def test_digest_changes_with_sku(self) -> None:
         left = golden_digest("gpu_1x_a10", "550.00", "12.8")

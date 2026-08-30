@@ -19,10 +19,9 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
-from config import LLM_SCENARIOS, BenchPlan, Job
+from config import LLM_SCENARIOS, SERVER_SCENARIOS, BenchPlan, Job
 from golden import apply_command, nfs_path, read_digest_command, write_digest_command
 from golden import digest as golden_digest
-from golden import local_path as golden_local_path
 from golden import pack_command as pack_golden_command
 from providers import get_provider
 from providers.base import Machine, Provider
@@ -324,27 +323,24 @@ def extra_weights(provider: Provider, machine: Machine, job: Job) -> None:
 def save_golden(
     provider: Provider, machine: Machine, sku: str, wanted: str, plan: BenchPlan
 ) -> None:
-    """Pack the golden image onto NFS and/or the controller. Untimed."""
-    dest = "/tmp/kryo-golden.tgz"
-    if plan.golden.store == "filesystem" and machine.filesystem:
-        dest = nfs_path(machine.filesystem, sku, wanted)
-        parent = dest.rsplit("/", 1)[0]
-        provider.run(machine, f"mkdir -p {shlex.quote(parent)}")
+    """Copy the golden tree onto NFS. Untimed. No gzip."""
+    if not (plan.golden.store == "filesystem" and machine.filesystem):
+        print("golden.store is not filesystem; skip packing (no local gzip copy)")
+        return
+    dest = nfs_path(machine.filesystem, sku, wanted)
+    parent = dest.rsplit("/", 1)[0]
+    provider.run(machine, f"mkdir -p {shlex.quote(parent)}")
     print(f"packing golden to {dest}")
     provider.run(machine, pack_golden_command(dest), timeout=3600)
-    if dest == "/tmp/kryo-golden.tgz":
-        cache = golden_local_path(sku, wanted)
-        provider.get(machine, dest, cache)
-        print(f"golden cached locally {cache.name}")
 
 
 def golden_on_filesystem(provider: Provider, machine: Machine, wanted: str) -> bool:
-    """True if this SKU's golden tarball is already on the attached filesystem."""
+    """True if this SKU's golden directory is already on the attached filesystem."""
     if not machine.filesystem:
         return False
     nfs = nfs_path(machine.filesystem, machine.sku, wanted)
     have = provider.run_output(
-        machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
+        machine, f"test -f {shlex.quote(nfs)}/.golden-ok && echo yes || echo no"
     ).strip()
     return have == "yes"
 
@@ -369,7 +365,7 @@ def maybe_save_golden(
     try:
         save_golden(provider, machine, machine.sku, wanted, plan)
     except Exception as error:
-        print(f"warning: could not save golden tarball: {error}")
+        print(f"warning: could not save golden directory: {error}")
 
 
 def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> None:
@@ -413,19 +409,12 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
     if machine.filesystem:
         nfs = nfs_path(machine.filesystem, machine.sku, wanted)
         have = provider.run_output(
-            machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
+            machine, f"test -f {shlex.quote(nfs)}/.golden-ok && echo yes || echo no"
         ).strip()
         if have == "yes":
             print(f"golden hit filesystem {nfs}")
             provider.run(machine, apply_command(nfs), timeout=1800)
             applied = True
-
-    cache = golden_local_path(machine.sku, wanted)
-    if not applied and cache.is_file():
-        print(f"golden hit local cache {cache.name}")
-        provider.put(machine, cache, "/tmp/kryo-golden.tgz")
-        provider.run(machine, apply_command("/tmp/kryo-golden.tgz"), timeout=1800)
-        applied = True
 
     if not applied:
         print(f"golden miss {wanted}; running setup.sh")
@@ -488,25 +477,45 @@ def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job, plan: BenchPla
         return None
 
 
+def server_remote(job: Job) -> str:
+    """One vLLM or Triton model on this VM. The other three jobs run on other VMs."""
+    if job.scenario.startswith("vllm"):
+        server = "vllm"
+    else:
+        server = "triton"
+    size = "32b" if job.scenario.endswith("32") else "7b"
+    return (
+        f"cd {REPO_REMOTE}/benchmarks && python3 -u servers/remote_bench.py "
+        f"--server {server} --size {size} --samples {int(job.samples)} "
+        f"--timeout {int(job.timeout)} --output {REMOTE_SAMPLE}"
+    )
+
+
 def run_job(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> dict[str, Any]:
     """Golden once, then on this VM: all colds, one dump, all restores."""
     print(f"job {job.scenario} ({job.samples} runs) on {pooled.machine.id}")
     ensure_golden(provider, pooled, job, plan)
     env = remote_env(pooled.machine.sku)
-    scenario = shlex.quote(job.scenario)
-    batch_timeout = int(job.timeout) * (int(job.samples) + 3) * 2 + 300
-    provider.run(
-        pooled.machine,
-        env + f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
-        f"--scenario {scenario} --runs {int(job.samples)} --timeout {int(job.timeout)} "
-        f"--output {REMOTE_SAMPLE}",
-        timeout=batch_timeout,
-    )
+    if job.scenario in SERVER_SCENARIOS:
+        command = env + server_remote(job)
+        batch_timeout = int(job.timeout) * (int(job.samples) + 3) * 2 + 1800
+    else:
+        scenario = shlex.quote(job.scenario)
+        command = (
+            env + f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
+            f"--scenario {scenario} --runs {int(job.samples)} --timeout {int(job.timeout)} "
+            f"--output {REMOTE_SAMPLE}"
+        )
+        batch_timeout = int(job.timeout) * (int(job.samples) + 3) * 2 + 300
+    provider.run(pooled.machine, command, timeout=batch_timeout)
     local_json = Path(tempfile.gettempdir()) / f"kryo-job-{job.scenario}.json"
     provider.get(pooled.machine, REMOTE_SAMPLE, local_json)
     data = json.loads(local_json.read_text(encoding="utf-8"))
-    scenarios = data.get("scenarios") if isinstance(data, dict) else None
-    block = scenarios.get(job.scenario) if isinstance(scenarios, dict) else None
+    if job.scenario in SERVER_SCENARIOS:
+        block = data if isinstance(data, dict) else None
+    else:
+        scenarios = data.get("scenarios") if isinstance(data, dict) else None
+        block = scenarios.get(job.scenario) if isinstance(scenarios, dict) else None
     if not isinstance(block, dict):
         raise RuntimeError(f"missing scenario payload for {job.scenario}")
     block["gpu"] = pooled.machine.sku

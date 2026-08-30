@@ -17,6 +17,8 @@ the NVIDIA driver.
 |------|-----|------|
 | `jobs/a10.yaml` | 1× A10 | Tiny models (`torch_cuda`, `yolo`, `qwen` 0.5B, `whisper`). |
 | `jobs/h100.yaml` | 1× H100 SXM5 | 7B + 32B. |
+| `jobs/h100-servers.yaml` | 4× 1× H100 | vLLM 7B, vLLM 32B, Triton 7B, Triton 32B (one VM each). |
+| `jobs/h100-servers.yaml` | 4× 1× H100 | vLLM 7B, vLLM 32B, Triton 7B, Triton 32B (one VM each). |
 
 Caps in the YAML bound how many VMs of each SKU can exist at once. Idle VMs
 are terminated after `idle_timeout`. The whole process also has a hard stop
@@ -58,17 +60,22 @@ doppler run -- uv run --directory ci/benchmark python -u run.py --reap-stale
 session. `--keep` leaves the pool running when the process exits (you must
 `--destroy` later).
 
-On a **new** VM the scheduler restores a golden tarball (CRIU, cuda-checkpoint,
+On a **new** VM the scheduler copies a golden directory (CRIU, cuda-checkpoint,
 Rust/uv, CUDA torch venv, HuggingFace cache) instead of running `setup.sh`
-again. Lambda cannot snapshot the root disk as a custom AMI, so the tarball
+again. Lambda cannot snapshot the root disk as a custom AMI, so the tree
 lives on a persistent filesystem attached at launch (`/lambda/nfs/kryo-golden`).
-CRIU GPU snapshots stay out of that image. Each VM dumps once, then reuses
-that dump for every timed restore on that box.
+It is a directory, not a gzip tarball: compressing 32B weights was slower
+than the benches. CRIU GPU snapshots stay out of that image. Each VM dumps
+once, then reuses that dump for every timed restore on that box.
 
-The first run in a region still pays `setup.sh`, then packs the tarball. Later
+The first run in a region still pays `setup.sh`, then copies the tree. Later
 CI jobs and idle-reaped replacements apply it and only rebuild Kryo. Filesystem
 storage is billed by Lambda; `golden.mode: setup` disables packing if you do
 not want that.
+
+vLLM and Triton server probes use `jobs/h100-servers.yaml` (four VMs: vLLM 7B,
+vLLM 32B, Triton 7B, Triton 32B). Do not restore inside Docker; images are
+unpacked to a host rootfs first.
 
 Timed runs use `benchmarks/.venv/bin/python`, not `uv run`.
 
