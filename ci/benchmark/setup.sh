@@ -99,4 +99,7 @@ PY
 # Use the venv directly. `uv run` would re-sync the lockfile and replace CUDA torch.
 benchmarks/.venv/bin/python benchmarks/download_models.py
 
+sudo mkdir -p /var/lib/kryo-bench
+echo "$(date -Iseconds) $(kryo --version)" | sudo tee /var/lib/kryo-bench/golden.stamp >/dev/null
+
 echo "setup complete"

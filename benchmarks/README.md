@@ -1,52 +1,26 @@
-# Kryo cold-start benchmarks
+# Benchmarks
 
-Times **cold start** (fresh Python process) vs **Kryo restore** on the same NVIDIA GPU.
+Time to first inference on a real NVIDIA GPU: a normal Python start versus restoring a Kryo snapshot.
 
-Do not run this on Modal or other serverless hosts: they snapshot their own containers, and CRIU needs a real VM with root.
+Cold start loads the model from disk and runs one inference. Kryo restores a snapshot, then runs the same inference. The Linux page cache is dropped first, so this is a new process reading files from disk, not a warm machine.
 
-## Scenarios
+Creating the snapshot is a deploy step. It is not included in the restore time.
 
-| Scenario | Workload |
-|----------|----------|
-| `torch_cuda` | PyTorch import, CUDA init, GPU matmul |
-| `yolo` | YOLOv8n load + one predict |
-| `qwen` | Qwen 2.5-0.5B load + warmup generate |
-| `whisper` | Whisper-tiny load + dummy transcription |
+Numbers live on the [main README](../README.md). They were measured on NVIDIA A10. The larger models below need an 80GB GPU.
 
-Each scenario warms CUDA, then calls `kryo.checkpoint()` when launched under the Kryo CLI. After the checkpoint the process `_exit`s so timings measure time-to-ready, not interpreter shutdown.
+| Workload | What starts |
+|----------|-------------|
+| PyTorch CUDA | import, CUDA init, one GPU matmul |
+| YOLOv8n | load weights, one predict |
+| Qwen 2.5-0.5B | load weights, first generate |
+| Whisper-tiny | load weights, one transcription |
+| Qwen 2.5-7B | load weights, first generate |
+| torch.compile on 7B | compile + CUDA graphs, first generate |
+| Qwen 2.5-32B | load weights, first generate (80GB GPU) |
 
-## Local (GPU VM)
-
-Needs Linux, NVIDIA driver 550+, CRIU, `cuda-checkpoint`, and the Kryo CLI (as root).
+These need Linux, an NVIDIA GPU, CRIU, `cuda-checkpoint`, and root. They will not run on a Mac.
 
 ```bash
 cd benchmarks
-uv sync
-# Match the wheel to the driver CUDA version (Lambda A10 is often cu128):
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-
-.venv/bin/python download_models.py
-.venv/bin/python runner.py --all --runs 10 --timeout 90
+python runner.py --scenario torch_cuda
 ```
-
-Use `.venv/bin/python`, not `uv run`, after installing the CUDA wheel. `uv run` re-syncs the lockfile and can replace torch with a CPU build.
-
-`--timeout 90` kills a hung dump/restore. HuggingFace is forced offline during timed runs, so download weights first.
-
-Results: `results/latest.json` (gitignored). The README chart is `results/charts/cold-vs-kryo.svg`.
-
-```bash
-python3 ../ci/benchmark/format_results.py \
-  --json results/latest.json \
-  --svg results/charts/cold-vs-kryo.svg \
-  --patch-readme ../README.md
-```
-
-## Cloud
-
-GitHub Actions rents a Lambda GPU, bootstraps the box, runs this runner, then destroys the instance.
-
-- **Each GitHub Release** — the Release workflow dispatches this job with 10 runs (not `release: published`; that event never fires when release-please uses `GITHUB_TOKEN`)
-- **Actions → GPU Benchmark** — `workflow_dispatch`; optional `tag` publishes JSON/SVG to that release and opens a `chore:` PR
-
-See [ci/benchmark/README.md](../ci/benchmark/README.md).

@@ -1,0 +1,24 @@
+# GitHub disables scheduled workflows on public repos after 60 days of
+# inactivity. Re-enabling via the API resets that timer without a commit.
+name: Keepalive
+
+on:
+  schedule:
+    - cron: "0 12 1 * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reset scheduled workflow inactivity timers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in lambda-janitor.yml keepalive.yml; do
+            gh api -X PUT "repos/${{ github.repository }}/actions/workflows/${workflow}/enable"
+            echo "Enabled ${workflow}"
+          done

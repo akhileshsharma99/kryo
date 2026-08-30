@@ -1,0 +1,26 @@
+# H100 shard. Runs in parallel with jobs/a10.yaml.
+# PCIe is the fallback when SXM5 is out of stock.
+
+idle_timeout: 10m
+provider: lambda
+caps:
+  gpu_1x_h100_sxm5: 1
+golden:
+  mode: tarball
+  store: filesystem
+  filesystem: kryo-golden
+snapshots:
+  store: local
+jobs:
+  - scenario: qwen7
+    gpu: gpu_1x_h100_sxm5
+    samples: 3
+    timeout: 600
+  - scenario: torch_compile
+    gpu: gpu_1x_h100_sxm5
+    samples: 3
+    timeout: 900
+  - scenario: qwen32
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 1200

@@ -148,7 +148,7 @@ fn create_snapshot(
     snapshot.set_workload_pid(workload_pid)?;
 
     check_for_interruption(&mut signals)?;
-    CudaCheckpoint::toggle(workload_pid)?;
+    CudaCheckpoint::suspend(workload_pid)?;
     child.mark_cuda_suspended(workload_pid);
     check_for_interruption(&mut signals)?;
 
@@ -319,21 +319,31 @@ fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("Snapshot '{}' has no checkpoint images", snapshot_name).into());
     }
 
-    // Restore the process with CRIU (detached mode)
     let criu = Criu::new(&images_dir);
-    let root_pid = criu.restore_detached()?;
-    let workload_pid = snapshot.metadata.workload_pid.unwrap_or(root_pid);
+    let mut lazy_daemon = None;
+    if Criu::lazy_pages_requested() {
+        lazy_daemon = Some(criu.start_lazy_pages()?);
+    }
 
-    // Resume CUDA state
-    CudaCheckpoint::toggle(workload_pid)?;
+    let run_result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let root_pid = criu.restore_detached(lazy_daemon.is_some())?;
+        let workload_pid = snapshot.metadata.workload_pid.unwrap_or(root_pid);
 
-    // Wake up the restored process
-    send_signal(workload_pid, libc::SIGUSR2)?;
+        CudaCheckpoint::resume(workload_pid)?;
+        // SIGUSR2 is often ignored after CUDA restore; SIGRTMIN+1 is not.
+        #[cfg(target_os = "linux")]
+        send_signal(workload_pid, libc::SIGRTMIN() + 1)?;
+        let _ = send_signal(workload_pid, libc::SIGUSR2);
+        wait_for_process(root_pid)?;
+        Ok(())
+    })();
 
-    // Wait for the restored process to complete
-    wait_for_process(root_pid)?;
+    if let Some(mut daemon) = lazy_daemon {
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
 
-    Ok(())
+    run_result
 }
 
 struct ChildGuard {
@@ -379,7 +389,7 @@ impl Drop for ChildGuard {
         }
 
         if let Some(pid) = self.suspended_cuda_pid {
-            let _ = CudaCheckpoint::toggle(pid);
+            let _ = CudaCheckpoint::resume(pid);
         }
 
         if let Ok(process_group) = i32::try_from(self.child.id()) {

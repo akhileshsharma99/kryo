@@ -14,12 +14,22 @@ import os
 import signal
 import time
 from importlib.metadata import version
+from typing import Any
 
 __version__ = version("kryo")
 __all__ = ["checkpoint"]
 
 _checkpointed = False
 _CLI_PID_ENV = "KRYO_CLI_PID"
+
+
+def _wake_signals() -> list[int]:
+    """Signals that mean 'restore finished, continue inference'."""
+    signals: list[int] = [int(signal.SIGUSR2)]
+    rt_min = getattr(signal, "SIGRTMIN", None)
+    if isinstance(rt_min, int):
+        signals.append(int(rt_min) + 1)
+    return signals
 
 
 def checkpoint() -> None:
@@ -55,15 +65,18 @@ def checkpoint() -> None:
         nonlocal restored
         restored = True
 
-    # Install a process-wide disposition before notifying the CLI. The flag
-    # remembers an early wake-up without taking a lock in the handler.
-    previous_handler = signal.signal(signal.SIGUSR2, wake)
+    # CUDA restore often leaves SIGUSR2 ignored. SIGRTMIN+1 is the wake the
+    # CLI sends; keep SIGUSR2 for older CLIs when the kernel still delivers it.
+    previous: list[tuple[int, Any]] = []
+    for sig in _wake_signals():
+        previous.append((sig, signal.signal(sig, wake)))
     try:
         os.kill(cli_pid, signal.SIGUSR1)
         _checkpointed = True
         # Poll so the main thread regularly runs pending Python signal
-        # handlers even if SIGUSR2 was delivered to another thread.
+        # handlers even if the wake was delivered to another thread.
         while not restored:
             time.sleep(0.1)
     finally:
-        signal.signal(signal.SIGUSR2, previous_handler)
+        for sig, handler in previous:
+            signal.signal(sig, handler)

@@ -1,0 +1,32 @@
+# Kill kryo-gha-* Lambda VMs that outlive LAMBDA_MAX_AGE_SECONDS (default 4h).
+# Backstop when a bench controller dies without running --destroy.
+name: Lambda janitor
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: lambda-janitor
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Reap stale kryo-gha-* instances
+        env:
+          LAMBDA_API_KEY: ${{ secrets.LAMBDA_API_KEY }}
+          LAMBDA_MAX_AGE_SECONDS: "14400"
+        run: |
+          uv sync --directory ci/benchmark
+          uv run --directory ci/benchmark python -u run.py --reap-stale

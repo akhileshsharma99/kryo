@@ -124,6 +124,5 @@ jobs:
           gh workflow run benchmark.yml \
             --repo "${{ github.repository }}" \
             --ref "${{ github.event.repository.default_branch }}" \
-            -f runs=10 \
-            -f gpu=auto \
+            -f jobs=all \
             -f tag="${{ needs.release-please.outputs.tag_name }}"
