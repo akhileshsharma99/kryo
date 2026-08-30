@@ -42,8 +42,25 @@ PREFERRED_INSTANCE_TYPES = [
     "gpu_1x_h100_sxm5",
 ]
 
+# Same generation / memory class. Used only when the requested SKU is sold out.
+SKU_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "gpu_1x_h100_pcie": ("gpu_1x_h100_sxm5", "gpu_1x_h100"),
+    "gpu_1x_h100": ("gpu_1x_h100_pcie", "gpu_1x_h100_sxm5"),
+    "gpu_1x_h100_sxm5": ("gpu_1x_h100_pcie", "gpu_1x_h100"),
+}
+
+_CAPACITY_LOCK = threading.Lock()
+_CAPACITY_CACHE: tuple[float, dict[str, list[str]]] | None = None
+CAPACITY_TTL_SECONDS = 20.0
+LAUNCH_WAIT_SECONDS = 1800
+
 INSTANCE_TYPE_RE = re.compile(r"^gpu_1x_[a-z0-9_]+$")
 IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+GHA_NAME_RE = re.compile(rf"^{re.escape(INSTANCE_NAME_PREFIX)}-t(\d+)-([^-]+)-")
+
+# Cron/janitor backstop. The bench process cap is BENCH_MAX_SECONDS (3h);
+# this is slightly higher so a healthy run is not reaped mid-job.
+DEFAULT_MAX_AGE_SECONDS = 4 * 60 * 60
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SESSION_DIR = REPO_ROOT / "ci" / "benchmark" / ".session"
@@ -80,6 +97,19 @@ def api_key() -> str:
     return key
 
 
+def _retry_after_seconds(detail: str, attempt: int) -> float:
+    """Cloudflare retry-after if present, otherwise exponential backoff."""
+    try:
+        payload = json.loads(detail)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict):
+        raw = payload.get("retry_after")
+        if isinstance(raw, (int, float)) and raw > 0:
+            return float(raw)
+    return float(min(30 * (2**attempt), 240))
+
+
 def request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
     """Call the Lambda Cloud API and return parsed JSON."""
     payload = None if body is None else json.dumps(body).encode()
@@ -91,23 +121,40 @@ def request(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         headers["Content-Type"] = "application/json"
     token = base64.b64encode(f"{api_key()}:".encode()).decode()
     headers["Authorization"] = f"Basic {token}"
-    req = urllib.request.Request(
-        f"{API_BASE}{path}",
-        data=payload,
-        headers=headers,
-        method=method,
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as response:
-            raw = response.read().decode()
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode() if error.fp else ""
-        raise LambdaError(f"{method} {path} failed ({error.code}): {detail}") from error
-    return json.loads(raw) if raw else {}
+    last_error: LambdaError | None = None
+    for attempt in range(7):
+        req = urllib.request.Request(
+            f"{API_BASE}{path}",
+            data=payload,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                raw = response.read().decode()
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode() if error.fp else ""
+            last_error = LambdaError(f"{method} {path} failed ({error.code}): {detail}")
+            if error.code == 429 and attempt < 6:
+                wait = _retry_after_seconds(detail, attempt)
+                print(f"Lambda API rate limited; retrying in {int(wait)}s")
+                time.sleep(wait)
+                continue
+            raise last_error from error
+        return json.loads(raw) if raw else {}
+    if last_error is None:
+        raise LambdaError(f"{method} {path} failed after retries")
+    raise last_error
 
 
 def list_capacity() -> dict[str, list[str]]:
     """Map instance type name to region names that currently have capacity."""
+    global _CAPACITY_CACHE
+    now = time.monotonic()
+    with _CAPACITY_LOCK:
+        cached = _CAPACITY_CACHE
+        if cached is not None and now - cached[0] < CAPACITY_TTL_SECONDS:
+            return cached[1]
     data = request("GET", "/instance-types").get("data", {})
     available: dict[str, list[str]] = {}
     if not isinstance(data, dict):
@@ -123,6 +170,8 @@ def list_capacity() -> dict[str, list[str]]:
         ]
         if region_names:
             available[name] = region_names
+    with _CAPACITY_LOCK:
+        _CAPACITY_CACHE = (time.monotonic(), available)
     return available
 
 
@@ -132,11 +181,15 @@ def choose_instance_type(requested: str) -> tuple[str, str]:
     if requested != "auto":
         if not INSTANCE_TYPE_RE.fullmatch(requested):
             raise LambdaError(f"invalid instance type: {requested}")
-        regions = available.get(requested)
-        if not regions:
-            stock = ", ".join(sorted(available)) or "none"
-            raise LambdaError(f"{requested} has no capacity (available: {stock})")
-        return requested, regions[0]
+        candidates = (requested, *SKU_FALLBACKS.get(requested, ()))
+        for name in candidates:
+            regions = available.get(name)
+            if regions:
+                if name != requested:
+                    print(f"{requested} has no capacity; using {name}")
+                return name, regions[0]
+        stock = ", ".join(sorted(available)) or "none"
+        raise LambdaError(f"{requested} has no capacity (available: {stock})")
 
     for name in PREFERRED_INSTANCE_TYPES:
         regions = available.get(name)
@@ -290,11 +343,15 @@ def wait_for_ip(instance_id: str, timeout: int = 1200) -> str:
     """Poll until the instance is active and has an IPv4 address."""
     print("waiting for Lambda boot (often several minutes)...")
     deadline = time.monotonic() + timeout
+    last_line = ""
     while time.monotonic() < deadline:
         instance = get_instance(instance_id)
         status = instance.get("status")
         ip = instance.get("ip")
-        print(f"instance {instance_id} status={status} ip={ip}")
+        line = f"instance {instance_id} status={status} ip={ip}"
+        if line != last_line:
+            print(line)
+            last_line = line
         if status in {"unhealthy", "terminated"}:
             raise LambdaError(f"instance entered {status}")
         if isinstance(ip, str) and IPV4_RE.fullmatch(ip):
@@ -326,6 +383,8 @@ def ssh_base(identity: Path, ip: str) -> list[str]:
         "UserKnownHostsFile=/dev/null",
         "-o",
         "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=30",
         "-o",
         "ConnectTimeout=10",
         f"{SSH_USER}@{ip}",
@@ -379,6 +438,49 @@ def instance_type_name(instance: dict[str, Any]) -> str:
     return "unknown"
 
 
+def parse_gha_name(name: str) -> tuple[int | None, str | None]:
+    """Return (launch epoch, GitHub run id) from a kryo-gha-* VM name."""
+    if not name.startswith(f"{INSTANCE_NAME_PREFIX}-"):
+        return None, None
+    match = GHA_NAME_RE.match(name)
+    if not match:
+        return None, None
+    return int(match.group(1)), match.group(2)
+
+
+def max_age_seconds() -> int:
+    """How long a kryo-gha-* VM may live before the janitor/cron kills it."""
+    raw = os.environ.get("LAMBDA_MAX_AGE_SECONDS", str(DEFAULT_MAX_AGE_SECONDS)).strip()
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_AGE_SECONDS
+
+
+def should_reap_instance(
+    name: str,
+    *,
+    keep_run_id: str | None,
+    max_age: int | None,
+    now: float,
+) -> bool:
+    """True when this kryo-gha-* VM should be terminated."""
+    if not name.startswith(f"{INSTANCE_NAME_PREFIX}-"):
+        return False
+    epoch, run_id = parse_gha_name(name)
+    if keep_run_id and run_id == keep_run_id:
+        if max_age is None or epoch is None:
+            return epoch is None
+        return (now - epoch) >= max_age
+    if keep_run_id:
+        return True
+    if max_age is None:
+        return True
+    if epoch is None:
+        return True
+    return (now - epoch) >= max_age
+
+
 def find_instance(instance_id: str) -> dict[str, Any] | None:
     """Return one instance record, or None if it is gone."""
     data = request("GET", "/instances").get("data", [])
@@ -405,25 +507,38 @@ def find_instance_named(name: str) -> dict[str, Any] | None:
     return None
 
 
-def terminate_leaked() -> None:
-    """Destroy leftover CI instances from previous crashed runs."""
+def terminate_leaked(
+    *,
+    max_age_seconds: int | None = None,
+    keep_run_id: str | None = None,
+) -> int:
+    """Destroy kryo-gha-* instances that match the reap policy. Return count."""
     data = request("GET", "/instances").get("data", [])
     if not isinstance(data, list):
-        return
-    leaked = [
-        item["id"]
-        for item in data
-        if isinstance(item, dict)
-        and isinstance(item.get("id"), str)
-        and isinstance(item.get("name"), str)
-        and item["name"].startswith(f"{INSTANCE_NAME_PREFIX}-")
-    ]
-    for instance_id in leaked:
-        print(f"terminating leaked instance {instance_id}")
+        return 0
+    now = time.time()
+    killed = 0
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        instance_id = item.get("id")
+        name = item.get("name")
+        status = item.get("status")
+        if not isinstance(instance_id, str) or not isinstance(name, str):
+            continue
+        if status in {"terminated", "terminating"}:
+            continue
+        if not should_reap_instance(
+            name, keep_run_id=keep_run_id, max_age=max_age_seconds, now=now
+        ):
+            continue
+        print(f"terminating leaked instance {instance_id} ({name})")
         try:
             terminate_instance(instance_id)
+            killed += 1
         except LambdaError as error:
             print(f"warning: could not terminate {instance_id}: {error}")
+    return killed
 
 
 def save_session(
@@ -536,8 +651,9 @@ class LambdaProvider:
         self._lock = threading.Lock()
 
     def janitor(self) -> None:
-        """Terminate leftover kryo-gha-* instances."""
-        terminate_leaked()
+        """Drop VMs from other runs (and this run if older than LAMBDA_MAX_AGE_SECONDS)."""
+        keep = os.environ.get("GITHUB_RUN_ID", "").strip() or None
+        terminate_leaked(keep_run_id=keep, max_age_seconds=max_age_seconds())
 
     def launch(self, sku: str, filesystem: str | None = None) -> Machine:
         """Create a VM, wait for SSH, and remember the connection."""
@@ -545,9 +661,21 @@ class LambdaProvider:
             self._seq += 1
             seq = self._seq
         run_id = os.environ.get("GITHUB_RUN_ID", str(os.getpid()))
-        instance_name = f"{INSTANCE_NAME_PREFIX}-{run_id}-{seq}"
-        ssh_key_name = f"{SSH_KEY_PREFIX}-{run_id}-{seq}"
-        instance_type, region = choose_instance_type(sku)
+        job = os.environ.get("GITHUB_JOB") or os.environ.get("BENCH_SHARD") or "local"
+        job = re.sub(r"[^a-z0-9]+", "", job.lower()) or "local"
+        epoch = int(time.time())
+        instance_name = f"{INSTANCE_NAME_PREFIX}-t{epoch}-{run_id}-{job}-{seq}"
+        ssh_key_name = f"{SSH_KEY_PREFIX}-t{epoch}-{run_id}-{job}-{seq}"
+        deadline = time.monotonic() + LAUNCH_WAIT_SECONDS
+        while True:
+            try:
+                instance_type, region = choose_instance_type(sku)
+                break
+            except LambdaError as error:
+                if time.monotonic() >= deadline or "no capacity" not in str(error).lower():
+                    raise
+                print(f"{error}; waiting 30s for capacity")
+                time.sleep(30)
         attached = ""
         if filesystem:
             attached = ensure_filesystem(filesystem, region)
@@ -575,6 +703,7 @@ class LambdaProvider:
             name=instance_name,
             region=region,
             filesystem=attached,
+            requested=sku,
         )
         with self._lock:
             self._conns[machine.id] = _Conn(

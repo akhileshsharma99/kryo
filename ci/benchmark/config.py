@@ -55,9 +55,9 @@ class GoldenConfig:
 
 @dataclass(frozen=True)
 class SnapshotConfig:
-    """Where CRIU snapshot tarballs live. `filesystem` is the Lambda golden disk."""
+    """CRIU dumps stay on the VM that created them (`local`)."""
 
-    store: str = "filesystem"
+    store: str = "local"
 
 
 @dataclass(frozen=True)
@@ -184,7 +184,7 @@ def load_plan(path: Path) -> BenchPlan:
     filesystem = filesystem_raw.strip()
     snap_raw = data.get("snapshots") or {}
     snap_map = _require_mapping(snap_raw, "snapshots") if snap_raw else {}
-    snap_store = str(snap_map.get("store", "filesystem"))
+    snap_store = str(snap_map.get("store", "local"))
     if snap_store not in {"local", "filesystem"}:
         raise ValueError(f"unsupported snapshots.store: {snap_store!r} (local or filesystem)")
     jobs_raw = data.get("jobs")

@@ -18,7 +18,6 @@
   - [Table of Contents](#table-of-contents)
   - [The Problem](#the-problem)
   - [The Solution](#the-solution)
-  - [How It Works](#how-it-works)
   - [Requirements](#requirements)
   - [Installation](#installation)
   - [Limitations](#limitations)
@@ -79,36 +78,6 @@ kryo run --snapshot llm
 
 3. **Recreate the snapshot** when the code, model, dependencies, or runtime
    environment changes.
-
-## How It Works
-
-Kryo combines [CRIU](https://criu.org/) (process checkpointing) with NVIDIA's [cuda-checkpoint](https://github.com/NVIDIA/cuda-checkpoint) (GPU state management).
-
-```mermaid
-sequenceDiagram
-    participant K as Kryo CLI
-    participant P as Your Process
-    participant G as GPU State
-
-    rect rgb(40, 40, 40)
-    note over K,G: kryo snapshot create
-    K->>P: Spawn process
-    P->>P: Imports, model load, warmup
-    P->>K: SIGUSR1 (ready)
-    K->>G: Suspend CUDA state
-    K->>P: CRIU dump (freeze)
-    note over P: 💾 Snapshot saved
-    end
-
-    rect rgb(40, 40, 40)
-    note over K,G: kryo run --snapshot
-    K->>P: CRIU restore (unfreeze)
-    K->>G: Resume CUDA state
-    K->>P: SIGUSR2 (wake up)
-    P->>P: Continue from checkpoint
-    note over P: ⚡ Sub-second cold start
-    end
-```
 
 ## Requirements
 
@@ -214,22 +183,33 @@ See [examples/](examples/) for more.
 
 ## Benchmarks
 
-Time to first inference on a real NVIDIA GPU: a fresh Python process vs restoring a Kryo snapshot. The page cache is dropped first, so weights are read from disk like a new pod.
+Time to first inference on a real NVIDIA GPU: a fresh Python process vs restoring a Kryo snapshot. The page cache is dropped first, so weights are read from disk like a new pod. Creating the snapshot is a deploy step, not part of the restore time.
 
 <!-- BENCHMARK_RESULTS:START -->
 ![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
 
-**NVIDIA A10** · Lambda `gpu_1x_a10` · driver 570.148.08 · 10 timed runs + warmup · release `v0.3.0`
+Page cache dropped before each timed run
+
+**NVIDIA A10** · Lambda `gpu_1x_a10`
 
 | Scenario | Cold start | Kryo restore | Speedup |
 |----------|------------|--------------|---------|
-| PyTorch CUDA | 1.37s | 0.95s | 1.4x |
-| YOLOv8n | 2.71s | 1.21s | 2.2x |
-| Qwen 2.5-0.5B | 4.29s | 2.14s | 2.0x |
-| Whisper-tiny | 3.94s | 1.33s | 3.0x |
+| YOLOv8n | 3.51s | 1.58s | 2.2x |
+| PyTorch CUDA | 1.92s | 1.03s | 1.9x |
+| Qwen 2.5-0.5B | 5.70s | 2.56s | 2.2x |
+| Whisper-tiny | 5.20s | 1.76s | 3.0x |
+
+**NVIDIA H100** · Lambda `gpu_1x_h100_pcie`
+
+| Scenario | Cold start | Kryo restore | Speedup |
+|----------|------------|--------------|---------|
+| Qwen 2.5-7B | 25.18s | 19.00s | 1.3x |
+| torch.compile Qwen 2.5-7B | 22.46s | 16.77s | 1.3x |
+| vLLM Qwen 2.5-7B | — | — | — |
+| Qwen 2.5-32B | 93.69s | 76.75s | 1.2x |
 <!-- BENCHMARK_RESULTS:END -->
 
-How these are measured: [benchmarks/](benchmarks/). CI rents a GPU; this will not run on a Mac.
+How these are measured: [benchmarks/](benchmarks/).
 
 ## Contributing
 

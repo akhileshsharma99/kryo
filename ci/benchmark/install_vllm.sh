@@ -15,6 +15,10 @@ echo "installing vllm ${VLLM_VERSION}+${CUDA_TAG} from GitHub"
 uv pip install --python benchmarks/.venv/bin/python \
   "${WHEEL}" \
   --extra-index-url "https://download.pytorch.org/whl/${CUDA_TAG}"
+# vLLM 0.27 pulls flashinfer 0.6.16.post2/post3; those crash on Python 3.11
+# (`array.array[int]`). post4 restores the import.
+uv pip install --python benchmarks/.venv/bin/python \
+  "flashinfer-python>=0.6.16.post4"
 benchmarks/.venv/bin/python - <<'PY'
 import torch
 import vllm
@@ -25,4 +29,6 @@ print(
 )
 if not torch.cuda.is_available():
     raise SystemExit("torch cannot see the GPU after vllm install")
+import flashinfer.comm  # noqa: F401
+print("flashinfer.comm import ok")
 PY

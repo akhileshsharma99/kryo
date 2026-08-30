@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: Job file under ci/benchmark/jobs (release.yaml, prod-fair.yaml)
+        description: "all (parallel A10 + H100), or a single file (release.yaml, h100.yaml, prod-fair.yaml)"
         required: false
-        default: "release.yaml"
+        default: "all"
       tag:
         description: Release tag to publish results to (empty = artifacts only)
         required: false
@@ -25,10 +25,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  benchmark:
-    name: Lambda GPU
+  a10:
+    name: A10
+    if: inputs.jobs == 'all' || inputs.jobs == 'release.yaml'
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,21 +38,93 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
 
-      - name: Run benchmarks
+      - name: Run A10 benchmarks
         env:
           LAMBDA_API_KEY: ${{ secrets.LAMBDA_API_KEY }}
           BENCH_RELEASE_TAG: ${{ inputs.tag }}
+          BENCH_MAX_SECONDS: "3600"
         run: |
           export BENCH_GIT_SHA="$(git rev-parse HEAD)"
           uv sync --directory ci/benchmark
           uv run --directory ci/benchmark python -u run.py \
-            --jobs "jobs/${{ inputs.jobs }}" \
-            --output ../../benchmarks/results/latest.json
+            --jobs jobs/release.yaml \
+            --output ../../benchmarks/results/a10.json
 
-      - name: Format results
-        if: always() && hashFiles('benchmarks/results/latest.json') != ''
+      - name: Upload A10 results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-a10
+          path: benchmarks/results/a10.json
+          if-no-files-found: ignore
+
+  h100:
+    name: H100
+    if: inputs.jobs == 'all' || inputs.jobs == 'h100.yaml' || inputs.jobs == 'prod-fair.yaml'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Run H100 benchmarks
+        env:
+          LAMBDA_API_KEY: ${{ secrets.LAMBDA_API_KEY }}
+          BENCH_RELEASE_TAG: ${{ inputs.tag }}
+          BENCH_MAX_SECONDS: "14400"
         run: |
+          export BENCH_GIT_SHA="$(git rev-parse HEAD)"
+          FILE="${{ inputs.jobs }}"
+          if [ "$FILE" = "all" ] || [ -z "$FILE" ]; then
+            FILE=h100.yaml
+          fi
+          uv sync --directory ci/benchmark
+          uv run --directory ci/benchmark python -u run.py \
+            --jobs "jobs/${FILE}" \
+            --output ../../benchmarks/results/h100.json
+
+      - name: Upload H100 results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-h100
+          path: benchmarks/results/h100.json
+          if-no-files-found: ignore
+
+  publish:
+    name: Chart and README
+    needs: [a10, h100]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Download shards
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          pattern: benchmark-*
+          merge-multiple: true
+          path: shards
+
+      - name: Merge, chart, README
+        id: format
+        run: |
+          shopt -s nullglob
+          FILES=(shards/*.json)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "no shard JSON"
+            exit 0
+          fi
           python3 ci/benchmark/format_results.py \
+            --merge "${FILES[@]}" \
             --json benchmarks/results/latest.json \
             --svg benchmarks/results/charts/cold-vs-kryo.svg \
             --markdown "$RUNNER_TEMP/kryo-benchmarks.md" \
@@ -59,9 +132,10 @@ jobs:
           if [ -n "${{ inputs.tag }}" ]; then
             cp benchmarks/results/latest.json "benchmarks/results/${{ inputs.tag }}.json"
           fi
+          echo "have_json=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload artifacts
-        if: always()
+      - name: Upload merged artifacts
+        if: always() && steps.format.outputs.have_json == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
@@ -71,7 +145,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Publish to GitHub Release
-        if: always() && inputs.tag != '' && hashFiles('benchmarks/results/latest.json') != ''
+        if: always() && inputs.tag != '' && steps.format.outputs.have_json == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
@@ -93,7 +167,7 @@ jobs:
           gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes-out.md"
 
       - name: Open results PR
-        if: always() && inputs.tag != '' && hashFiles('benchmarks/results/latest.json') != ''
+        if: always() && inputs.tag != '' && steps.format.outputs.have_json == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ github.token }}

@@ -11,7 +11,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from config import load_plan
-from providers.lambda_cloud import destroy_dev_session
+from providers.lambda_cloud import destroy_dev_session, max_age_seconds, terminate_leaked
 from scheduler import run_plan
 
 REPO_ROOT = HERE.parent.parent
@@ -47,11 +47,20 @@ def main() -> None:
     parser.add_argument(
         "--destroy",
         action="store_true",
-        help="Terminate leftover kryo-gha-* VMs and any saved kryo-dev session",
+        help="Terminate leftover kryo-gha-* VMs (run this if the controller dies)",
+    )
+    parser.add_argument(
+        "--reap-stale",
+        action="store_true",
+        help="Terminate kryo-gha-* VMs older than LAMBDA_MAX_AGE_SECONDS (default 4h)",
     )
     args = parser.parse_args()
     if args.destroy:
         destroy_dev_session()
+        return
+    if args.reap_stale:
+        killed = terminate_leaked(max_age_seconds=max_age_seconds())
+        print(f"reaped {killed} stale instance(s)")
         return
     jobs_path = resolve_jobs(args.jobs)
     if not jobs_path.is_file():

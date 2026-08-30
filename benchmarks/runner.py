@@ -163,6 +163,10 @@ def kill_process_group(pid: int) -> None:
     except (ProcessLookupError, PermissionError, OSError):
         with suppress(ProcessLookupError, PermissionError, OSError):
             os.kill(pid, signal.SIGKILL)
+        sudo = shutil.which("sudo")
+        if sudo is not None:
+            subprocess.run([sudo, "-n", "kill", "-9", f"-{pid}"], check=False, capture_output=True)
+            subprocess.run([sudo, "-n", "kill", "-9", str(pid)], check=False, capture_output=True)
 
 
 def kill_stray_scenarios() -> None:
@@ -170,11 +174,24 @@ def kill_stray_scenarios() -> None:
     pkill = shutil.which("pkill")
     if pkill is None:
         return
+    prefix: list[str] = []
+    sudo = shutil.which("sudo")
+    if os.geteuid() != 0 and sudo is not None:
+        prefix = [sudo, "-n"]
     for scenario in KNOWN_SCENARIOS:
         script = str((SCENARIOS_DIR / f"{scenario}.py").resolve())
-        subprocess.run([pkill, "-9", "-f", script], check=False, capture_output=True)
-    subprocess.run([pkill, "-9", "-f", "criu lazy-pages"], check=False, capture_output=True)
-    subprocess.run([pkill, "-9", "-f", "VLLM::"], check=False, capture_output=True)
+        subprocess.run(
+            [*prefix, pkill, "-9", "-f", script], check=False, capture_output=True
+        )
+    subprocess.run(
+        [*prefix, pkill, "-9", "-f", "criu lazy-pages"], check=False, capture_output=True
+    )
+    subprocess.run([*prefix, pkill, "-9", "-f", "VLLM::"], check=False, capture_output=True)
+    subprocess.run(
+        [*prefix, pkill, "-9", "-f", "/usr/local/bin/kryo run"],
+        check=False,
+        capture_output=True,
+    )
 
 
 def sudo_prefix() -> list[str]:
@@ -279,9 +296,12 @@ def run_timed(
     except subprocess.TimeoutExpired:
         kill_process_group(proc.pid)
         kill_stray_scenarios()
-        leftover, _ = proc.communicate(timeout=5)
-        output = leftover or ""
-        raise RuntimeError(f"timed out after {timeout}s: {output[-2000:]}") from None
+        leftover = ""
+        try:
+            leftover, _ = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            leftover = ""
+        raise RuntimeError(f"timed out after {timeout}s: {(leftover or '')[-2000:]}") from None
     elapsed = time.perf_counter() - started
     if proc.returncode != 0:
         raise RuntimeError(f"command failed ({proc.returncode}): {(output or '')[-4000:]}")
@@ -362,9 +382,57 @@ def snapshot_bytes(name: str) -> int | None:
         return None
 
 
+def kryo_run_command(snapshot: str) -> list[str]:
+    """Restore in a fresh PID namespace so dump PIDs are not already taken."""
+    prefix = kryo_command()
+    args = ["run", "--snapshot", snapshot]
+    unshare = shutil.which("unshare")
+    if unshare is None:
+        return [*prefix, *args]
+    return [
+        *prefix[:-1],
+        unshare,
+        "--fork",
+        "--pid",
+        "--mount",
+        "--mount-proc",
+        "--",
+        prefix[-1],
+        *args,
+    ]
+
+
+def snapshot_dir(name: str) -> Path:
+    """On-disk CRIU snapshot directory for this process."""
+    configured = os.environ.get("KRYO_SNAPSHOTS_DIR", "").strip()
+    base = Path(configured) if configured else Path("/root/.kryo/snapshots")
+    return base / name
+
+
 def snapshot_name(scenario: str) -> str:
     """Stable CRIU snapshot name for a scenario."""
     return f"bench-{scenario}"
+
+
+def prepare_for_restore(name: str) -> None:
+    """Drop leftover restore/cold processes so CRIU can recreate dump PIDs."""
+    kill_stray_scenarios()
+    meta = snapshot_dir(name) / "metadata.json"
+    inspect = subprocess.run(
+        [*sudo_prefix(), "cat", str(meta)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inspect.returncode != 0 or not inspect.stdout.strip():
+        return
+    try:
+        data = json.loads(inspect.stdout)
+    except json.JSONDecodeError:
+        return
+    pid = data.get("workload_pid")
+    if isinstance(pid, int) and pid > 1:
+        subprocess.run([*sudo_prefix(), "kill", "-9", str(pid)], check=False, capture_output=True)
 
 
 def run_once(
@@ -397,6 +465,7 @@ def run_once(
         image_bytes = snapshot_bytes(snapshot)
         if image_bytes is not None:
             print(f"  snapshot images {image_bytes / (1024**3):.2f} GiB")
+        kill_stray_scenarios()
         result: dict[str, Any] = {"scenario": scenario, "mode": "create"}
         if image_bytes is not None:
             result["snapshot_bytes"] = image_bytes
@@ -404,6 +473,7 @@ def run_once(
 
     if mode == "restore":
         print("  kryo restore (1 sample)")
+        kill_stray_scenarios()
         elapsed, _ = run_timed(
             [*kryo, "run", "--snapshot", snapshot], cwd, timeout, drop_caches=flags.drop_caches
         )
@@ -457,6 +527,7 @@ def run_scenario(
         print(f"  snapshot images {image_bytes / (1024**3):.2f} GiB")
 
     print(f"  kryo restore ({runs} runs{extra})")
+    prepare_for_restore(snapshot)
     restored = measure_runs(
         [*kryo, "run", "--snapshot", snapshot],
         cwd,
@@ -485,6 +556,8 @@ def prepare_snapshot_env(*, tmpfs_snapshots: bool = False) -> str:
     else:
         configured = os.environ.get("KRYO_SNAPSHOTS_DIR", "").strip()
         snapshots_dir = configured or "default-disk"
+        if configured:
+            subprocess.run([*sudo_prefix(), "mkdir", "-p", configured], check=False)
     if not os.environ.get("KRYO_LAZY_PAGES", "").strip():
         os.environ["KRYO_LAZY_PAGES"] = "0"
     print(f"  snapshots dir {snapshots_dir}")

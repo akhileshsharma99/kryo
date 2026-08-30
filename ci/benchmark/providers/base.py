@@ -16,6 +16,7 @@ class Machine:
     name: str
     region: str = ""
     filesystem: str = ""
+    requested: str = ""
 
 
 class Provider(Protocol):

@@ -12,7 +12,9 @@ from golden import nfs_dir
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CACHE_DIR = Path(__file__).resolve().parent / ".snapshots"
 SCENARIOS_DIR = REPO_ROOT / "benchmarks" / "scenarios"
-REMOTE_SNAP_ROOT = "/root/.kryo/snapshots"
+# Must match KRYO_SNAPSHOTS_DIR in scheduler.remote_env. sudo -E keeps HOME=/home/ubuntu,
+# so Kryo's default ~/.kryo/snapshots is not /root/.kryo/snapshots.
+REMOTE_SNAP_ROOT = "/var/lib/kryo-bench/criu"
 REMOTE_HASH_ROOT = "/var/lib/kryo-bench/snapshots"
 
 
@@ -60,10 +62,12 @@ def pack_command(scenario: str, destination: str = "/tmp/kryo-snap.tgz") -> str:
     name = snapshot_id(scenario)
     quoted = shlex.quote(destination)
     parent = shlex.quote(destination.rsplit("/", 1)[0])
+    # Sticky /tmp: do not write an archive that ubuntu already created.
     pack_tmp = (
+        "sudo rm -f /tmp/kryo-snap.tgz && "
         f"sudo mkdir -p {REMOTE_SNAP_ROOT} && "
         f"sudo tar -C {REMOTE_SNAP_ROOT} -czf /tmp/kryo-snap.tgz {name} && "
-        f"sudo chmod 644 /tmp/kryo-snap.tgz"
+        "sudo chmod 644 /tmp/kryo-snap.tgz"
     )
     if destination == "/tmp/kryo-snap.tgz":
         return pack_tmp

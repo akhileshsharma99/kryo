@@ -9,6 +9,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+GPU_LABELS = {
+    "gpu_1x_a10": "NVIDIA A10",
+    "gpu_1x_h100_pcie": "NVIDIA H100",
+    "gpu_1x_h100_sxm5": "NVIDIA H100",
+    "gpu_1x_h100": "NVIDIA H100",
+}
 SCENARIO_LABELS = {
     "torch_cuda": "PyTorch CUDA",
     "yolo": "YOLOv8n",
@@ -88,7 +94,7 @@ def scenario_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
 def caption(metadata: object) -> str:
     """One-line hardware / sample-size summary."""
     if not isinstance(metadata, dict):
-        return "Cold start vs Kryo restore"
+        return "Page cache dropped before each timed run."
     parts: list[str] = []
     gpu = metadata.get("gpu")
     if isinstance(gpu, str) and gpu:
@@ -102,12 +108,15 @@ def caption(metadata: object) -> str:
     runs = metadata.get("runs_per_mode")
     if isinstance(runs, int):
         sample = "run" if runs == 1 else "runs"
-        parts.append(f"{runs} timed {sample} + warmup")
+        extra = "" if metadata.get("warmup") is False else " + warmup"
+        parts.append(f"{runs} timed {sample}{extra}")
     tag = metadata.get("release_tag")
     if isinstance(tag, str) and tag:
         parts.append(f"release `{tag}`")
+    if not parts:
+        parts.append("Page cache dropped before each timed run")
     note = metadata.get("note")
-    line = " · ".join(parts) if parts else "Cold start vs Kryo restore"
+    line = " · ".join(parts)
     if isinstance(note, str) and note:
         return f"{line}. {note}"
     return line
@@ -134,14 +143,51 @@ def markdown_table(results: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _gpu_groups(results: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Split scenarios by the GPU SKU they ran on."""
+    scenarios = results.get("scenarios")
+    if not isinstance(scenarios, dict):
+        return []
+    order: list[str] = []
+    groups: dict[str, dict[str, Any]] = {}
+    for name, data in scenarios.items():
+        if not isinstance(name, str) or not isinstance(data, dict):
+            continue
+        gpu = data.get("gpu")
+        key = gpu if isinstance(gpu, str) and gpu else ""
+        if key not in groups:
+            groups[key] = {}
+            order.append(key)
+        groups[key][name] = data
+    return [(key, groups[key]) for key in order]
+
+
+def markdown_results(results: dict[str, Any]) -> str:
+    """One table, or one table per GPU when the JSON mixed SKUs."""
+    groups = _gpu_groups(results)
+    if len(groups) <= 1:
+        return markdown_table(results)
+    metadata = results.get("metadata")
+    meta = metadata if isinstance(metadata, dict) else {}
+    parts: list[str] = []
+    for gpu, scenarios in groups:
+        label = GPU_LABELS.get(gpu, gpu or "GPU")
+        sku = f"Lambda `{gpu}`" if gpu else ""
+        heading = f"**{label}**" + (f" · {sku}" if sku else "")
+        subset = {"metadata": meta, "scenarios": scenarios}
+        parts.append(f"{heading}\n\n{markdown_table(subset)}")
+    return "\n\n".join(parts)
+
+
 def readme_block(results: dict[str, Any], image_rel: str) -> str:
     """README section between the result markers."""
     cap = caption(results.get("metadata"))
+    table = markdown_results(results)
     return (
         f"{README_START}\n"
         f"![Cold start vs Kryo restore]({image_rel})\n\n"
         f"{cap}\n\n"
-        f"{markdown_table(results)}\n"
+        f"{table}\n"
         f"{README_END}"
     )
 
@@ -184,10 +230,8 @@ def nice_ceiling(value: float) -> float:
     return float(10.0 * magnitude)
 
 
-def svg_chart(results: dict[str, Any]) -> str:
-    """Grouped bar chart of cold vs Kryo restore times."""
-    rows = [row for row in scenario_rows(results) if isinstance(row.get("cold"), float)]
-    width, height = 880, 420
+def _svg_panel(rows: list[dict[str, Any]], width: int, height: int, title: str) -> str:
+    """One GPU group's bars. Origin is the panel top-left."""
     left, right, top, bottom = 64, 28, 78, 62
     plot_w = width - left - right
     plot_h = height - top - bottom
@@ -203,7 +247,7 @@ def svg_chart(results: dict[str, Any]) -> str:
         return top + plot_h * (1.0 - seconds / y_max)
 
     ticks = int(y_max) if y_max in {1.0, 2.0, 5.0, 10.0} else 4
-    grid_parts: list[str] = []
+    parts: list[str] = []
     for i in range(ticks + 1):
         value = y_max * i / ticks
         y = y_pos(value)
@@ -211,37 +255,36 @@ def svg_chart(results: dict[str, Any]) -> str:
             tick = f"{round(value)}s"
         else:
             tick = f"{value:.1f}s"
-        grid_parts.append(
+        parts.append(
             f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
             f'stroke="{GRID}" stroke-width="1"/>'
         )
-        grid_parts.append(
+        parts.append(
             f'<text x="{left - 10}" y="{y + 4:.1f}" fill="{MUTED}" font-size="12" '
             f'text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif">'
             f"{tick}</text>"
         )
 
-    bars: list[str] = []
     for index, row in enumerate(rows):
         center = left + group_w * (index + 0.5)
         cold = float(row["cold"])
         kryo = row.get("kryo")
         cold_x = center - gap / 2 - bar_w
         cold_y = y_pos(cold)
-        bars.append(
+        parts.append(
             f'<rect x="{cold_x:.1f}" y="{cold_y:.1f}" width="{bar_w:.1f}" '
             f'height="{top + plot_h - cold_y:.1f}" rx="4" fill="{COLD_COLOR}"/>'
         )
         if isinstance(kryo, float):
             kryo_x = center + gap / 2
             kryo_y = y_pos(kryo)
-            bars.append(
+            parts.append(
                 f'<rect x="{kryo_x:.1f}" y="{kryo_y:.1f}" width="{bar_w:.1f}" '
                 f'height="{top + plot_h - kryo_y:.1f}" rx="4" fill="{KRYO_COLOR}"/>'
             )
             speedup = row.get("speedup")
             if isinstance(speedup, float):
-                bars.append(
+                parts.append(
                     f'<text x="{kryo_x + bar_w / 2:.1f}" y="{kryo_y - 8:.1f}" '
                     f'fill="{SPEEDUP_COLOR}" font-size="12" font-weight="600" '
                     f'text-anchor="middle" '
@@ -249,51 +292,91 @@ def svg_chart(results: dict[str, Any]) -> str:
                     f"{speedup:.1f}x</text>"
                 )
         label = xml_escape(str(row["label"]))
-        bars.append(
+        parts.append(
             f'<text x="{center:.1f}" y="{height - 28}" fill="{TEXT}" font-size="13" '
             f'text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif">'
             f"{label}</text>"
         )
 
-    metadata = results.get("metadata")
-    subtitle = caption(metadata) if isinstance(metadata, dict) else ""
-    subtitle = re.sub(r"[*`]", "", subtitle)
-
     font = "ui-sans-serif, system-ui, sans-serif"
-    return "\n".join(
-        [
-            (
-                f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
-                f'height="{height}" viewBox="0 0 {width} {height}" role="img" '
-                'aria-label="Cold start vs Kryo restore">'
-            ),
-            f'<rect width="{width}" height="{height}" rx="16" fill="{BG}"/>',
-            (
-                f'<text x="{left}" y="32" fill="{TEXT}" font-size="20" '
-                f'font-weight="700" font-family="{font}">Cold start vs Kryo restore</text>'
-            ),
-            (
-                f'<text x="{left}" y="54" fill="{MUTED}" font-size="12" '
-                f'font-family="{font}">{xml_escape(subtitle)}</text>'
-            ),
-            "<g>",
-            (f'<rect x="{width - 250}" y="18" width="12" height="12" rx="2" fill="{COLD_COLOR}"/>'),
-            (
-                f'<text x="{width - 234}" y="28" fill="{MUTED}" font-size="12" '
-                f'font-family="{font}">Cold start</text>'
-            ),
-            (f'<rect x="{width - 140}" y="18" width="12" height="12" rx="2" fill="{KRYO_COLOR}"/>'),
-            (
-                f'<text x="{width - 124}" y="28" fill="{MUTED}" font-size="12" '
-                f'font-family="{font}">Kryo restore</text>'
-            ),
-            "</g>",
-            "".join(grid_parts),
-            "".join(bars),
-            "</svg>",
-            "",
-        ]
+    parts.insert(
+        0,
+        f'<text x="{left}" y="32" fill="{TEXT}" font-size="20" '
+        f'font-weight="700" font-family="{font}">{xml_escape(title)}</text>',
     )
+    return "".join(parts)
+
+
+def svg_chart(results: dict[str, Any]) -> str:
+    """Grouped bar chart. One panel per GPU so A10 bars are not dwarfed by 32B."""
+    panels: list[tuple[str, list[dict[str, Any]]]] = []
+    for gpu, scenarios in _gpu_groups(results):
+        subset = {"metadata": results.get("metadata"), "scenarios": scenarios}
+        rows = [row for row in scenario_rows(subset) if isinstance(row.get("cold"), float)]
+        if rows:
+            panels.append((gpu, rows))
+    if not panels:
+        rows = [row for row in scenario_rows(results) if isinstance(row.get("cold"), float)]
+        panels = [("", rows)]
+
+    width, panel_h = 880, 400
+    height = panel_h * len(panels)
+    font = "ui-sans-serif, system-ui, sans-serif"
+    chunks: list[str] = [
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" '
+            f'height="{height}" viewBox="0 0 {width} {height}" role="img" '
+            'aria-label="Cold start vs Kryo restore">'
+        ),
+        f'<rect width="{width}" height="{height}" rx="16" fill="{BG}"/>',
+        "<g>",
+        f'<rect x="{width - 250}" y="18" width="12" height="12" rx="2" fill="{COLD_COLOR}"/>',
+        (
+            f'<text x="{width - 234}" y="28" fill="{MUTED}" font-size="12" '
+            f'font-family="{font}">Cold start</text>'
+        ),
+        f'<rect x="{width - 140}" y="18" width="12" height="12" rx="2" fill="{KRYO_COLOR}"/>',
+        (
+            f'<text x="{width - 124}" y="28" fill="{MUTED}" font-size="12" '
+            f'font-family="{font}">Kryo restore</text>'
+        ),
+        "</g>",
+    ]
+    for index, (gpu, rows) in enumerate(panels):
+        title = GPU_LABELS.get(gpu, gpu) if gpu else "Cold start vs Kryo restore"
+        if not gpu:
+            title = "Cold start vs Kryo restore"
+        elif title == gpu:
+            title = gpu
+        else:
+            title = f"{title} · cold start vs Kryo restore"
+        chunks.append(f'<g transform="translate(0,{index * panel_h})">')
+        chunks.append(_svg_panel(rows, width, panel_h, title))
+        chunks.append("</g>")
+    chunks.append("</svg>")
+    chunks.append("")
+    return "\n".join(chunks)
+
+
+def merge_result_files(paths: list[Path]) -> dict[str, Any]:
+    """Combine per-SKU runner JSON files into one document for the README."""
+    scenarios: dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
+    sources: list[str] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        data = load_results(path)
+        meta = data.get("metadata")
+        if isinstance(meta, dict):
+            metadata.update(meta)
+        block = data.get("scenarios")
+        if isinstance(block, dict):
+            scenarios.update(block)
+        sources.append(path.name)
+    if sources:
+        metadata["merged"] = sources
+    return {"metadata": metadata, "scenarios": scenarios}
 
 
 def merge_release_notes(existing: str, section: str) -> str:
@@ -315,14 +398,20 @@ def release_section(results: dict[str, Any], tag: str, repo: str) -> str:
         "## GPU benchmarks\n\n"
         f"![Cold start vs Kryo restore]({image})\n\n"
         f"{caption(results.get('metadata'))}\n\n"
-        f"{markdown_table(results)}\n"
+        f"{markdown_results(results)}\n"
     )
 
 
 def main() -> None:
     """CLI for CI publishing and local README/chart regeneration."""
     parser = argparse.ArgumentParser(description="Format Kryo benchmark results")
-    parser.add_argument("--json", required=True, help="Path to runner JSON")
+    parser.add_argument("--json", required=True, help="Path to runner JSON (output when --merge)")
+    parser.add_argument(
+        "--merge",
+        nargs="+",
+        metavar="JSON",
+        help="Combine per-SKU JSON files, write the merge to --json, then format",
+    )
     parser.add_argument("--svg", help="Write SVG chart here")
     parser.add_argument("--markdown", help="Write markdown table here")
     parser.add_argument("--patch-readme", help="Replace README result markers")
@@ -333,8 +422,14 @@ def main() -> None:
     parser.add_argument("--repo", default="", help="owner/repo for notes image URLs")
     args = parser.parse_args()
 
-    results = load_results(Path(args.json))
-    table = markdown_table(results)
+    if args.merge:
+        results = merge_result_files([Path(item) for item in args.merge])
+        out = Path(args.json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    else:
+        results = load_results(Path(args.json))
+    table = markdown_results(results)
 
     if args.svg:
         svg_path = Path(args.svg)

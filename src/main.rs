@@ -148,7 +148,7 @@ fn create_snapshot(
     snapshot.set_workload_pid(workload_pid)?;
 
     check_for_interruption(&mut signals)?;
-    CudaCheckpoint::toggle(workload_pid)?;
+    CudaCheckpoint::suspend(workload_pid)?;
     child.mark_cuda_suspended(workload_pid);
     check_for_interruption(&mut signals)?;
 
@@ -329,8 +329,11 @@ fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let root_pid = criu.restore_detached(lazy_daemon.is_some())?;
         let workload_pid = snapshot.metadata.workload_pid.unwrap_or(root_pid);
 
-        CudaCheckpoint::toggle(workload_pid)?;
-        send_signal(workload_pid, libc::SIGUSR2)?;
+        CudaCheckpoint::resume(workload_pid)?;
+        // SIGUSR2 is often ignored after CUDA restore; SIGRTMIN+1 is not.
+        #[cfg(target_os = "linux")]
+        send_signal(workload_pid, libc::SIGRTMIN() + 1)?;
+        let _ = send_signal(workload_pid, libc::SIGUSR2);
         wait_for_process(root_pid)?;
         Ok(())
     })();
@@ -386,7 +389,7 @@ impl Drop for ChildGuard {
         }
 
         if let Some(pid) = self.suspended_cuda_pid {
-            let _ = CudaCheckpoint::toggle(pid);
+            let _ = CudaCheckpoint::resume(pid);
         }
 
         if let Ok(process_group) = i32::try_from(self.child.id()) {

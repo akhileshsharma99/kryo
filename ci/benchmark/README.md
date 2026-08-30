@@ -15,17 +15,28 @@ the NVIDIA driver.
 
 | File | GPU | What |
 |------|-----|------|
-| `jobs/release.yaml` | 1× A10 | Tiny models (`torch_cuda`, `yolo`, `qwen` 0.5B, `whisper`). GitHub Release uses this. |
-| `jobs/prod-fair.yaml` | 1× H100 PCIe | 7B probes (`qwen7`, `torch_compile`, `vllm_engine`). Manual only. |
+| `jobs/release.yaml` | 1× A10 | Tiny models (`torch_cuda`, `yolo`, `qwen` 0.5B, `whisper`). Release CI A10 shard. |
+| `jobs/h100.yaml` | 1× H100 SXM5 | 7B + 32B + vLLM. Release CI H100 shard (parallel with A10). |
+| `jobs/prod-fair.yaml` | 1× H100 SXM5 | 7B probes only (`qwen7`, `torch_compile`, `vllm_engine`). Manual. |
+| `jobs/all.yaml` | A10 + H100 | Local combined controller. Prefer the two shards in GitHub Actions. |
 
 Caps in the YAML bound how many VMs of each SKU can exist at once. Idle VMs
-are terminated after `idle_timeout` so a hung controller cannot leave boxes
-up overnight.
+are terminated after `idle_timeout`. The whole process also has a hard stop
+(`BENCH_MAX_SECONDS`, default 3 hours) and destroys the pool on SIGINT/SIGTERM
+or interpreter exit. If the controller is killed with SIGKILL, run
+`python -u run.py --destroy` immediately. A scheduled **Lambda janitor**
+workflow also reaps `kryo-gha-*` VMs older than 4 hours.
 
 ## Triggers
 
-- **GitHub Release** — `release.yml` dispatches `benchmark.yml` with `jobs=release.yaml`
-- **Actions → GPU Benchmark** — `workflow_dispatch`; pick the job file; optional `tag` publishes
+- **GitHub Release** — `release.yml` dispatches `benchmark.yml` with `jobs=all`
+  (A10 and H100 in parallel). The publish job merges JSON, updates the README
+  chart and table, uploads release assets, and opens a `chore:` PR.
+- **Actions → GPU Benchmark** — `workflow_dispatch`; `all` or a single job file;
+  optional `tag` publishes
+- **Lambda janitor** — every 30 minutes (`--reap-stale`)
+- **Keepalive** — monthly; re-enables scheduled workflows so GitHub does not
+  disable them after 60 days of inactivity on a public repo
 
 Not on pull requests. Public repo, paid GPU, secrets.
 
@@ -40,8 +51,9 @@ GitHub Actions uses the `LAMBDA_API_KEY` repo secret.
 
 ```bash
 doppler run -- uv run --directory ci/benchmark python -u run.py --jobs jobs/release.yaml
-doppler run -- uv run --directory ci/benchmark python -u run.py --jobs jobs/prod-fair.yaml
+doppler run -- uv run --directory ci/benchmark python -u run.py --jobs jobs/h100.yaml
 doppler run -- uv run --directory ci/benchmark python -u run.py --destroy
+doppler run -- uv run --directory ci/benchmark python -u run.py --reap-stale
 ```
 
 `--destroy` kills leftover `kryo-gha-*` instances and any saved `kryo-dev`
@@ -52,17 +64,13 @@ On a **new** VM the scheduler restores a golden tarball (CRIU, cuda-checkpoint,
 Rust/uv, CUDA torch venv, HuggingFace cache) instead of running `setup.sh`
 again. Lambda cannot snapshot the root disk as a custom AMI, so the tarball
 lives on a persistent filesystem attached at launch (`/lambda/nfs/kryo-golden`).
-CRIU GPU snapshots stay out of that image; they are cached separately under
-`.snapshots/`.
+CRIU GPU snapshots stay out of that image. Each VM dumps once, then reuses
+that dump for every timed restore on that box.
 
 The first run in a region still pays `setup.sh`, then packs the tarball. Later
 CI jobs and idle-reaped replacements apply it and only rebuild Kryo. Filesystem
 storage is billed by Lambda; `golden.mode: setup` disables packing if you do
 not want that.
-
-Snapshot tarballs are also cached on the controller under gitignored
-`ci/benchmark/.snapshots/` and reused when the scenario script, weights id,
-Kryo version, GPU SKU, and driver match.
 
 Timed runs use `benchmarks/.venv/bin/python`, not `uv run`.
 

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import queue
 import shlex
+import signal
 import subprocess
 import tempfile
 import threading
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -25,12 +26,18 @@ from golden import local_path as golden_local_path
 from golden import pack_command as pack_golden_command
 from providers import get_provider
 from providers.base import Machine, Provider
+from snapshots import REMOTE_SNAP_ROOT, read_hash_command, write_hash_command
 from snapshots import digest as snapshot_digest
-from snapshots import nfs_tarball as snapshot_nfs_tarball
-from snapshots import pack_command as pack_snapshot_command
-from snapshots import read_hash_command, tarball_path, unpack_command, write_hash_command
 
 print = partial(print, flush=True)
+
+LAUNCH_WAIT_SECONDS = 1800
+
+
+def pool_sku(machine: Machine) -> str:
+    """SKU the scheduler queued this VM under (may differ from the launched type)."""
+    return machine.requested or machine.sku
+
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
@@ -79,6 +86,7 @@ class MachinePool:
         self._cv = threading.Condition(self._lock)
         self._machines: list[Pooled] = []
         self._stop = False
+        self._closed = False
         self._reaper = threading.Thread(target=self._reap_loop, name="idle-reaper", daemon=True)
         self._reaper.start()
 
@@ -90,13 +98,15 @@ class MachinePool:
                 if self._stop:
                     raise RuntimeError("machine pool is shutting down")
                 idle = [
-                    item for item in self._machines if item.machine.sku == sku and not item.busy
+                    item
+                    for item in self._machines
+                    if pool_sku(item.machine) == sku and not item.busy
                 ]
                 if idle:
                     item = idle[0]
                     item.busy = True
                     return item
-                live = sum(1 for item in self._machines if item.machine.sku == sku)
+                live = sum(1 for item in self._machines if pool_sku(item.machine) == sku)
                 pending_launches = self._launching.get(sku, 0)
                 cap = self._caps.get(sku, 1)
                 if live + pending_launches < cap:
@@ -106,19 +116,34 @@ class MachinePool:
                     self._cv.wait(timeout=1)
                     continue
             if launch:
-                try:
-                    machine = self._provider.launch(sku, filesystem=self._filesystem)
-                    pooled = Pooled(machine=machine, busy=True)
-                    with self._cv:
-                        self._machines.append(pooled)
-                        self._launching[sku] = max(0, self._launching.get(sku, 1) - 1)
-                        self._cv.notify_all()
-                    return pooled
-                except BaseException:
-                    with self._cv:
-                        self._launching[sku] = max(0, self._launching.get(sku, 1) - 1)
-                        self._cv.notify_all()
-                    raise
+                started = time.monotonic()
+                while True:
+                    try:
+                        machine = self._provider.launch(sku, filesystem=self._filesystem)
+                        pooled = Pooled(machine=machine, busy=True)
+                        with self._cv:
+                            self._machines.append(pooled)
+                            self._launching[sku] = max(0, self._launching.get(sku, 1) - 1)
+                            self._cv.notify_all()
+                        return pooled
+                    except Exception as error:
+                        retry = _launch_retryable(error) and (
+                            time.monotonic() - started < LAUNCH_WAIT_SECONDS
+                        )
+                        with self._cv:
+                            stopping = self._stop
+                        if stopping or not retry:
+                            with self._cv:
+                                self._launching[sku] = max(0, self._launching.get(sku, 1) - 1)
+                                self._cv.notify_all()
+                            raise
+                        print(f"waiting 45s to launch {sku}: {error}")
+                        time.sleep(45)
+                    except BaseException:
+                        with self._cv:
+                            self._launching[sku] = max(0, self._launching.get(sku, 1) - 1)
+                            self._cv.notify_all()
+                        raise
 
     def release(self, pooled: Pooled) -> None:
         """Return a VM to the idle set."""
@@ -127,9 +152,23 @@ class MachinePool:
             pooled.idle_since = time.monotonic()
             self._cv.notify_all()
 
-    def shutdown(self, *, terminate: bool) -> None:
-        """Stop the reaper and optionally destroy every VM."""
+    def discard(self, pooled: Pooled) -> None:
+        """Terminate a VM that is no longer reachable and drop it from the pool."""
         with self._cv:
+            self._machines = [item for item in self._machines if item is not pooled]
+            self._cv.notify_all()
+        print(f"discarding {pooled.machine.id} ({pooled.machine.sku})")
+        try:
+            self._provider.terminate(pooled.machine)
+        except Exception as error:
+            print(f"warning: discard terminate {pooled.machine.id}: {error}")
+
+    def shutdown(self, *, terminate: bool) -> None:
+        """Stop the reaper and optionally destroy every VM. Safe to call twice."""
+        with self._cv:
+            if self._closed:
+                return
+            self._closed = True
             self._stop = True
             self._cv.notify_all()
             machines = list(self._machines)
@@ -137,6 +176,7 @@ class MachinePool:
         if terminate:
             for pooled in machines:
                 try:
+                    print(f"terminating {pooled.machine.id} ({pooled.machine.sku})")
                     self._provider.terminate(pooled.machine)
                 except Exception as error:
                     print(f"warning: terminate {pooled.machine.id}: {error}")
@@ -168,6 +208,31 @@ class MachinePool:
                     self._provider.terminate(pooled.machine)
                 except Exception as error:
                     print(f"warning: idle terminate {pooled.machine.id}: {error}")
+
+
+def _launch_retryable(error: BaseException) -> bool:
+    """Capacity and rate-limit errors should wait, not burn sample retries."""
+    text = str(error).lower()
+    return any(
+        needle in text
+        for needle in ("no capacity", "429", "rate limited", "rate_limited")
+    )
+
+
+def machine_lost(error: BaseException) -> bool:
+    """SSH died; the VM should not be reused."""
+    text = str(error).lower()
+    return any(
+        needle in text
+        for needle in (
+            "broken pipe",
+            "operation timed out",
+            "connection refused",
+            "connection reset",
+            "no route to host",
+            "exit status 255",
+        )
+    )
 
 
 def git_sha() -> str:
@@ -216,6 +281,7 @@ def remote_env(sku: str) -> str:
     tag = os.environ.get("BENCH_RELEASE_TAG", "").strip()
     parts = [
         "export PATH=/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH",
+        f"export KRYO_SNAPSHOTS_DIR={shlex.quote(REMOTE_SNAP_ROOT)}",
         f"export BENCH_INSTANCE_TYPE={shlex.quote(sku)}",
     ]
     if sha:
@@ -287,6 +353,40 @@ def save_golden(
         print(f"golden cached locally {cache.name}")
 
 
+def golden_on_filesystem(provider: Provider, machine: Machine, wanted: str) -> bool:
+    """True if this SKU's golden tarball is already on the attached filesystem."""
+    if not machine.filesystem:
+        return False
+    nfs = nfs_path(machine.filesystem, machine.sku, wanted)
+    have = provider.run_output(
+        machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
+    ).strip()
+    return have == "yes"
+
+
+def maybe_save_golden(
+    provider: Provider,
+    machine: Machine,
+    wanted: str,
+    plan: BenchPlan,
+    *,
+    force: bool = False,
+) -> None:
+    """Pack golden once. Safe to call again; no-ops when the tarball exists."""
+    if plan.golden.mode != "tarball":
+        return
+    if (
+        not force
+        and plan.golden.store == "filesystem"
+        and golden_on_filesystem(provider, machine, wanted)
+    ):
+        return
+    try:
+        save_golden(provider, machine, machine.sku, wanted, plan)
+    except Exception as error:
+        print(f"warning: could not save golden tarball: {error}")
+
+
 def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> None:
     """Untimed image bring-up: restore a golden tarball, or run setup.sh once."""
     machine = pooled.machine
@@ -320,7 +420,8 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
         print(f"golden digest hit on {machine.id} {wanted}")
         provider.run(machine, rebuild_kryo(), timeout=600)
         pooled.golden = True
-        extra_weights(provider, machine, job)
+        installed_vllm = extra_weights(provider, machine, job)
+        maybe_save_golden(provider, machine, wanted, plan, force=installed_vllm)
         return
 
     applied = False
@@ -353,22 +454,22 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
 
     provider.run(machine, write_digest_command(wanted))
     installed_vllm = extra_weights(provider, machine, job)
-    if plan.golden.mode == "tarball" and (not applied or installed_vllm):
-        try:
-            save_golden(provider, machine, machine.sku, wanted, plan)
-        except Exception as error:
-            print(f"warning: could not save golden tarball: {error}")
+    maybe_save_golden(
+        provider, machine, wanted, plan, force=not applied or installed_vllm
+    )
     pooled.golden = True
 
 
 def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> int | None:
-    """Create the CRIU snapshot once per digest, then reuse it.
+    """Create the CRIU snapshot once on this VM, then reuse it here.
 
-    Dump is untimed. Timed restore later reads the files from disk after
-    drop_caches. Tarballs live on the Lambda filesystem when configured, so a
-    new VM does not dump again.
+    Dump is untimed. Do not restore a dump from another machine: CRIU needs the
+    original PIDs, and a busy host PID table will collide. Golden images still
+    move across VMs; GPU snapshots do not.
     """
+    del plan
     machine = pooled.machine
+    provider.run(machine, f"sudo mkdir -p {REMOTE_SNAP_ROOT}")
     kryo_ver = provider.run_output(machine, "kryo --version").strip()
     driver = provider.run_output(
         machine,
@@ -381,27 +482,7 @@ def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job, plan: BenchPla
         pooled.snap_digests.add(wanted)
         return None
 
-    nfs = ""
-    if plan.snapshots.store == "filesystem" and machine.filesystem:
-        nfs = snapshot_nfs_tarball(machine.filesystem, job.scenario, machine.sku, wanted)
-        have = provider.run_output(
-            machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
-        ).strip()
-        if have == "yes":
-            print(f"snapshot hit filesystem {job.scenario} {wanted}")
-            provider.run(machine, unpack_command(job.scenario, wanted, nfs), timeout=600)
-            pooled.snap_digests.add(wanted)
-            return None
-
-    cache = tarball_path(job.scenario, machine.sku, wanted)
-    if cache.is_file():
-        print(f"snapshot hit local cache {cache.name}")
-        provider.put(machine, cache, "/tmp/kryo-snap.tgz")
-        provider.run(machine, unpack_command(job.scenario, wanted), timeout=600)
-        pooled.snap_digests.add(wanted)
-        return None
-
-    print(f"snapshot miss {job.scenario} {wanted}; creating once")
+    print(f"snapshot miss {job.scenario} {wanted}; creating once on this VM")
     env = remote_env(machine.sku)
     scenario = shlex.quote(job.scenario)
     create_timeout = max(job.timeout * 2, job.timeout + 180)
@@ -413,13 +494,6 @@ def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job, plan: BenchPla
         timeout=create_timeout,
     )
     provider.run(machine, write_hash_command(job.scenario, wanted))
-    dest = nfs if nfs else "/tmp/kryo-snap.tgz"
-    provider.run(machine, pack_snapshot_command(job.scenario, dest), timeout=600)
-    if dest == "/tmp/kryo-snap.tgz":
-        partial = cache.with_suffix(".partial")
-        provider.get(machine, dest, partial)
-        partial.replace(cache)
-        provider.run(machine, "rm -f /tmp/kryo-snap.tgz")
     pooled.snap_digests.add(wanted)
     local_json = Path(tempfile.gettempdir()) / f"kryo-create-{job.scenario}.json"
     try:
@@ -431,104 +505,34 @@ def ensure_snapshot(provider: Provider, pooled: Pooled, job: Job, plan: BenchPla
         return None
 
 
-def run_timed_once(
-    provider: Provider,
-    machine: Machine,
-    job: Job,
-    mode: str,
-    local_json: Path,
-) -> dict[str, Any]:
-    """One timed cold or restore sample. Weights and snapshots are already on disk."""
-    env = remote_env(machine.sku)
-    scenario = shlex.quote(job.scenario)
-    keep = " --keep-snapshot" if mode == "restore" else ""
-    provider.run(
-        machine,
-        env + f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
-        f"--scenario {scenario} --once {mode} --timeout {int(job.timeout)} "
-        f"--output {REMOTE_SAMPLE}{keep}",
-        timeout=job.timeout + 120,
-    )
-    provider.get(machine, REMOTE_SAMPLE, local_json)
-    data = json.loads(local_json.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise RuntimeError(f"invalid {mode} payload from {machine.id}")
-    return data
-
-
-def run_sample(
-    provider: Provider, pooled: Pooled, sample: Sample, plan: BenchPlan
-) -> dict[str, Any]:
-    """Untimed prepare, then timed cold and timed restore."""
-    job = sample.job
-    print(f"sample {job.scenario}[{sample.index + 1}/{job.samples}] on {pooled.machine.id}")
+def run_job(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> dict[str, Any]:
+    """Golden once, then on this VM: all colds, one dump, all restores."""
+    print(f"job {job.scenario} ({job.samples} runs) on {pooled.machine.id}")
     ensure_golden(provider, pooled, job, plan)
-    image_bytes = ensure_snapshot(provider, pooled, job, plan)
-    work = Path("/tmp")
-    cold_json = work / f"kryo-cold-{job.scenario}-{sample.index}.json"
-    restore_json = work / f"kryo-restore-{job.scenario}-{sample.index}.json"
-    cold = run_timed_once(provider, pooled.machine, job, "cold", cold_json)
-    restore = run_timed_once(provider, pooled.machine, job, "restore", restore_json)
-    result: dict[str, Any] = {
-        "scenario": job.scenario,
-        "gpu": pooled.machine.sku,
-        "index": sample.index,
-        "cold_seconds": cold.get("seconds"),
-        "kryo_seconds": restore.get("seconds"),
-        "machine": pooled.machine.id,
-    }
-    if image_bytes is not None:
-        result["snapshot_bytes"] = image_bytes
-    return result
+    env = remote_env(pooled.machine.sku)
+    scenario = shlex.quote(job.scenario)
+    batch_timeout = int(job.timeout) * (int(job.samples) + 3) * 2 + 300
+    provider.run(
+        pooled.machine,
+        env + f"cd {REPO_REMOTE}/benchmarks && .venv/bin/python runner.py "
+        f"--scenario {scenario} --runs {int(job.samples)} --timeout {int(job.timeout)} "
+        f"--output {REMOTE_SAMPLE}",
+        timeout=batch_timeout,
+    )
+    local_json = Path(tempfile.gettempdir()) / f"kryo-job-{job.scenario}.json"
+    provider.get(pooled.machine, REMOTE_SAMPLE, local_json)
+    data = json.loads(local_json.read_text(encoding="utf-8"))
+    scenarios = data.get("scenarios") if isinstance(data, dict) else None
+    block = scenarios.get(job.scenario) if isinstance(scenarios, dict) else None
+    if not isinstance(block, dict):
+        raise RuntimeError(f"missing scenario payload for {job.scenario}")
+    block["gpu"] = pooled.machine.sku
+    block["machine"] = pooled.machine.id
+    return block
 
 
-def aggregate(
-    plan: BenchPlan, rows: list[dict[str, Any]], errors: list[dict[str, str]]
-) -> dict[str, Any]:
-    """Fold per-sample rows into the JSON format_results.py already understands."""
-    by_scenario: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        name = row.get("scenario")
-        if isinstance(name, str):
-            by_scenario[name].append(row)
-
-    scenarios: dict[str, Any] = {}
-    for job in plan.jobs:
-        samples = by_scenario.get(job.scenario, [])
-        colds = [
-            float(row["cold_seconds"])
-            for row in samples
-            if isinstance(row.get("cold_seconds"), (int, float))
-        ]
-        kryos = [
-            float(row["kryo_seconds"])
-            for row in samples
-            if isinstance(row.get("kryo_seconds"), (int, float))
-        ]
-        failed = [item for item in errors if item.get("scenario") == job.scenario]
-        block: dict[str, Any] = {
-            "gpu": job.gpu,
-            "cold": {"runs": len(colds), "samples": colds, "total": compute_stats(colds)},
-            "kryo": {"runs": len(kryos), "samples": kryos, "total": compute_stats(kryos)},
-        }
-        sizes = [
-            int(row["snapshot_bytes"])
-            for row in samples
-            if isinstance(row.get("snapshot_bytes"), int)
-        ]
-        if sizes:
-            block["snapshot_bytes"] = sizes[-1]
-        if colds and kryos:
-            cold_mean = float(mean(colds))
-            kryo_mean = float(mean(kryos))
-            if kryo_mean > 0:
-                block["speedup"] = cold_mean / kryo_mean
-        if failed:
-            block["errors"] = [item["error"] for item in failed]
-        if not colds and not kryos:
-            block["error"] = failed[0]["error"] if failed else "no successful samples"
-        scenarios[job.scenario] = block
-
+def results_metadata(plan: BenchPlan) -> dict[str, Any]:
+    """Controller metadata attached to the aggregated JSON."""
     metadata: dict[str, Any] = {
         "timestamp": datetime.now(UTC).isoformat(),
         "jobs_file": str(plan.path),
@@ -538,7 +542,7 @@ def aggregate(
         "golden_mode": plan.golden.mode,
         "golden_store": plan.golden.store,
         "drop_caches": True,
-        "warmup": False,
+        "warmup": True,
     }
     sha = git_sha()
     if sha:
@@ -546,11 +550,23 @@ def aggregate(
     tag = os.environ.get("BENCH_RELEASE_TAG", "").strip()
     if tag:
         metadata["release_tag"] = tag
-    return {"metadata": metadata, "scenarios": scenarios, "samples": rows}
+    return metadata
+
+
+DEFAULT_MAX_SECONDS = 3 * 60 * 60
+
+
+def max_run_seconds() -> int:
+    """Hard cap on a bench process so a dead session cannot bill GPUs for days."""
+    raw = os.environ.get("BENCH_MAX_SECONDS", str(DEFAULT_MAX_SECONDS)).strip()
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_SECONDS
 
 
 def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, Any]:
-    """Execute every sample in the plan and write aggregated JSON."""
+    """Run each job on a pooled VM: colds, one dump, restores."""
     provider = get_provider(plan.provider)
     provider.janitor()
     fs = (
@@ -559,14 +575,27 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
         else None
     )
     pool = MachinePool(provider, plan.caps, plan.idle_timeout, filesystem=fs)
+    limit = max_run_seconds()
+    print(f"GPU pool hard stop after {limit}s (BENCH_MAX_SECONDS); Ctrl-C or SIGTERM destroys VMs")
+
+    def _kill_pool() -> None:
+        pool.shutdown(terminate=not keep)
+
+    atexit.register(_kill_pool)
+
+    def _on_signal(signum: int, _frame: Any) -> None:
+        print(f"received signal {signum}; destroying GPU pool")
+        _kill_pool()
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
     by_sku: dict[str, queue.Queue[Sample | None]] = {}
     for job in plan.jobs:
-        pending = by_sku.setdefault(job.gpu, queue.Queue())
-        for index in range(job.samples):
-            pending.put(Sample(job=job, index=index))
+        by_sku.setdefault(job.gpu, queue.Queue()).put(Sample(job=job, index=0))
 
-    rows: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
+    scenarios: dict[str, Any] = {}
     lock = threading.Lock()
 
     def worker(sku: str, pending: queue.Queue[Sample | None]) -> None:
@@ -575,32 +604,36 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
             if sample is None:
                 pending.task_done()
                 return
+            job = sample.job
+            pooled = None
             try:
                 pooled = pool.acquire(sku)
-                try:
-                    row = run_sample(provider, pooled, sample, plan)
-                finally:
-                    pool.release(pooled)
+                block = run_job(provider, pooled, job, plan)
                 with lock:
-                    rows.append(row)
-                    cold = row.get("cold_seconds")
-                    kryo = row.get("kryo_seconds")
-                    print(f"  {sample.job.scenario}[{sample.index + 1}] cold={cold} kryo={kryo}")
+                    scenarios[job.scenario] = block
+                    cold = block.get("cold", {}).get("total", {}).get("mean")
+                    kryo = block.get("kryo", {}).get("total", {}).get("mean")
+                    speedup = block.get("speedup")
+                    print(f"  {job.scenario} cold={cold} kryo={kryo} speedup={speedup}")
+                pool.release(pooled)
+                pooled = None
             except Exception as error:
                 message = str(error)
-                print(f"sample failed {sample.job.scenario}[{sample.index + 1}]: {message}")
-                if sample.attempt < sample.job.retries:
-                    pending.put(
-                        Sample(job=sample.job, index=sample.index, attempt=sample.attempt + 1)
-                    )
+                print(f"job failed {job.scenario}: {message}")
+                if pooled is not None and machine_lost(error):
+                    pool.discard(pooled)
+                    pooled = None
+                elif pooled is not None:
+                    pool.release(pooled)
+                    pooled = None
+                if sample.attempt < job.retries:
+                    delay = min(30 * (2 ** sample.attempt), 120)
+                    print(f"retrying {job.scenario} in {delay}s")
+                    time.sleep(delay)
+                    pending.put(Sample(job=job, index=0, attempt=sample.attempt + 1))
                 else:
                     with lock:
-                        errors.append(
-                            {
-                                "scenario": sample.job.scenario,
-                                "error": message,
-                            }
-                        )
+                        scenarios[job.scenario] = {"gpu": job.gpu, "error": message}
             finally:
                 pending.task_done()
 
@@ -613,9 +646,21 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
             )
             threads.append(thread)
             thread.start()
-    try:
+    finished = threading.Event()
+
+    def _wait_queues() -> None:
         for pending in by_sku.values():
             pending.join()
+        finished.set()
+
+    waiter = threading.Thread(target=_wait_queues, name="queue-join", daemon=True)
+    waiter.start()
+    timed_out = False
+    try:
+        if not finished.wait(timeout=limit):
+            timed_out = True
+            print(f"hit BENCH_MAX_SECONDS={limit}; destroying GPUs")
+            pool.shutdown(terminate=True)
     finally:
         for sku, pending in by_sku.items():
             n_workers = min(plan.caps.get(sku, 1), 8)
@@ -624,8 +669,13 @@ def run_plan(plan: BenchPlan, output: Path, *, keep: bool = False) -> dict[str, 
         for thread in threads:
             thread.join(timeout=5)
         pool.shutdown(terminate=not keep)
+    if timed_out:
+        raise RuntimeError(
+            f"benchmark exceeded {limit}s; GPUs terminated. "
+            "raise BENCH_MAX_SECONDS if this was a real run."
+        )
 
-    results = aggregate(plan, rows, errors)
+    results = {"metadata": results_metadata(plan), "scenarios": scenarios}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     print(f"results copied to {output}")

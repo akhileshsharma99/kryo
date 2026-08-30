@@ -11,6 +11,9 @@ trap cleanup EXIT
 
 add() {
   local rel="$1"
+  case "$rel" in
+    ""|.|proc|proc/*|sys|sys/*|dev|dev/*|run|run/*) return ;;
+  esac
   if [ -e "/$rel" ]; then
     printf '%s\n' "$rel" >>"$list"
   fi
@@ -31,7 +34,8 @@ add "home/${USER:-ubuntu}/kryo/benchmarks/scenarios/yolov8n.pt"
 if command -v dpkg >/dev/null; then
   while read -r path; do
     case "$path" in
-      /*) printf '%s\n' "${path#/}" >>"$list" ;;
+      /|/.|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*) continue ;;
+      /*) add "${path#/}" ;;
     esac
   done < <(dpkg -L criu 2>/dev/null || true)
 fi
@@ -42,9 +46,12 @@ if [ ! -s "$list" ]; then
 fi
 
 sort -u "$list" -o "$list"
-tmp="$(mktemp --suffix=.tgz)"
+# Do not mktemp the archive: sudo tar's gzip child cannot write a 0600 file owned by ubuntu.
+tmp="/tmp/kryo-golden.$$.tgz"
+sudo rm -f "$tmp"
 sudo tar -C / --exclude='**/.kryo/snapshots' --exclude='**/__pycache__' \
-  --warning=no-file-changed -czf "$tmp" --files-from="$list"
+  --exclude='./proc' --exclude='./sys' --exclude='./dev' --exclude='./run' \
+  --warning=no-file-changed --ignore-failed-read -czf "$tmp" --files-from="$list"
 sudo chmod 644 "$tmp"
 mkdir -p "$(dirname "$OUT")"
 if [[ "$OUT" == /lambda/nfs/* ]]; then
@@ -52,5 +59,5 @@ if [[ "$OUT" == /lambda/nfs/* ]]; then
 else
   sudo mv "$tmp" "$OUT"
 fi
-rm -f "$tmp"
+sudo rm -f "$tmp"
 echo "packed golden $OUT ($(du -h "$OUT" | awk '{print $1}'))"

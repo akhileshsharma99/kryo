@@ -1,15 +1,12 @@
 # Benchmarks
 
-Kryo vs a normal Python start, measured as **time to first inference** on a
-real NVIDIA GPU.
+Time to first inference on a real NVIDIA GPU: a normal Python start versus restoring a Kryo snapshot.
 
-Cold start loads the model from disk. Kryo restores a snapshot, then runs the
-same first inference. The Linux page cache is dropped before every timed run,
-so this is a new pod with files on disk, not a warm machine with weights
-already in RAM.
+Cold start loads the model from disk and runs one inference. Kryo restores a snapshot, then runs the same inference. The Linux page cache is dropped first, so this is a new process reading files from disk, not a warm machine.
 
-Numbers on the [main README](../README.md) are from NVIDIA A10. Larger models
-below need an 80GB GPU.
+Creating the snapshot is a deploy step. It is not included in the restore time.
+
+Numbers live on the [main README](../README.md). They were measured on NVIDIA A10. The larger models below need an 80GB GPU.
 
 | Workload | What starts |
 |----------|-------------|
@@ -22,9 +19,9 @@ below need an 80GB GPU.
 | vLLM on 7B | engine start + CUDA-graph capture, first generate |
 | Qwen 2.5-32B | load weights, first generate (80GB GPU) |
 
-Creating the snapshot is a deploy step. It is not included in the restore
-time.
+These need Linux, an NVIDIA GPU, CRIU, `cuda-checkpoint`, and root. They will not run on a Mac.
 
-These run in CI on [Lambda Cloud](https://lambdalabs.com/) VMs, not on a
-laptop. A Linux NVIDIA box with CRIU, `cuda-checkpoint`, and root can
-reproduce them with `benchmarks/runner.py`.
+```bash
+cd benchmarks
+python runner.py --scenario torch_cuda
+```

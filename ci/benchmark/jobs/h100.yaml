@@ -1,5 +1,5 @@
-# Production-fair probes on H100 SXM5. Weights already on disk; page cache dropped.
-# Cap is 1 so this cannot fan out to multiple expensive GPUs.
+# Full H100 shard for release CI. Runs in parallel with jobs/release.yaml (A10).
+# PCIe is the fallback when SXM5 is out of stock.
 
 idle_timeout: 10m
 provider: lambda
@@ -24,3 +24,7 @@ jobs:
     gpu: gpu_1x_h100_sxm5
     samples: 3
     timeout: 900
+  - scenario: qwen32
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 1200
