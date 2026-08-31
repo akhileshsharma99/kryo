@@ -22,6 +22,7 @@ impl CudaCheckpoint {
     /// fails in the locked state. Unlock (and restore first if needed).
     pub fn resume(pid: u32) -> Result<()> {
         let state = Self::state(pid)?;
+        eprintln!("kryo: cuda-checkpoint resume pid {pid} state={state}");
         match state.as_str() {
             "checkpointed" => {
                 Self::action("restore", pid, None)?;

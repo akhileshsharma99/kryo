@@ -335,7 +335,14 @@ fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let run_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let root_pid = criu.restore_detached(lazy_daemon.is_some())?;
-        let workload_pid = snapshot.metadata.workload_pid.unwrap_or(root_pid);
+        // CRIU may keep dump-time PIDs, but siblings without CUDA confuse
+        // cuda-checkpoint. Re-discover the GPU PID in the restored tree.
+        let gpu_pid = CudaCheckpoint::gpu_pid_in_tree(root_pid);
+        let workload_pid = if gpu_pid != root_pid {
+            gpu_pid
+        } else {
+            snapshot.metadata.workload_pid.unwrap_or(root_pid)
+        };
 
         CudaCheckpoint::resume(workload_pid)?;
         // SIGUSR2 is often ignored after CUDA restore; SIGRTMIN+1 is not.
