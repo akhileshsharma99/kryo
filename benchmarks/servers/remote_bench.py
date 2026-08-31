@@ -376,8 +376,10 @@ def triton_command(rootfs: Path, model: str, port: int, gpu: str, size: str) -> 
         binary,
         f"--model-repository=/models/{size}",
         f"--http-port={port}",
-        "--grpc-port=0",
-        "--metrics-port=0",
+        # Port 0 is "any port", not "disabled"; both landing on 0.0.0.0:0 makes
+        # Triton refuse to start (grpc and metrics share the same address).
+        "--allow-grpc=false",
+        "--allow-metrics=false",
         "--log-verbose=0",
         "--model-control-mode=none",
     ]
@@ -739,6 +741,8 @@ def main() -> None:
     Path(args.output).write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     log(f"wrote {args.output}")
     print(json.dumps(results, indent=2), flush=True)
+    if "error" in results:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
