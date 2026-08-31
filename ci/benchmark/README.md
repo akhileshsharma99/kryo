@@ -80,7 +80,7 @@ When `tag` is set (Release always passes the new tag):
 
 1. Upload `kryo-benchmarks.json`, `.svg`, and `.md` as **release assets**
 2. Append a chart + table to the **release notes**
-3. Open a `chore:` PR that updates `benchmarks/results/<tag>.json`, the README chart, and the README table
+3. Open a `chore:` PR that updates `benchmarks/results/results.json`, the README chart, and the README table
 
 Dispatch without `tag` only uploads Actions artifacts. Bench failure does not
 un-publish crates or PyPI; it fails the GPU workflow only.
