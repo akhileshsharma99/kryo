@@ -521,6 +521,8 @@ def run_job(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> di
         block = scenarios.get(job.scenario) if isinstance(scenarios, dict) else None
     if not isinstance(block, dict):
         raise RuntimeError(f"missing scenario payload for {job.scenario}")
+    if block.get("error"):
+        raise RuntimeError(str(block["error"]))
     block["gpu"] = pooled.machine.sku
     block["machine"] = pooled.machine.id
     return block

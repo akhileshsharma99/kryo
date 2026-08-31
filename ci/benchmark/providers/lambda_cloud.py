@@ -799,10 +799,11 @@ class LambdaProvider:
         )
         deadline = time.monotonic() + timeout
         poll = (
-            f"tail -n 50 {shlex.quote(log_path)} 2>/dev/null || true; "
+            f"tail -n 20 {shlex.quote(log_path)} 2>/dev/null || true; "
             f"if [ -f {shlex.quote(exit_path)} ]; then "
             f"echo __KRYO_EXIT__:$(cat {shlex.quote(exit_path)}); fi"
         )
+        last_out = ""
         while time.monotonic() < deadline:
             try:
                 result = subprocess.run(
@@ -817,8 +818,9 @@ class LambdaProvider:
                 time.sleep(15)
                 continue
             out = (result.stdout or "") + (result.stderr or "")
-            if out.strip():
+            if out.strip() and out != last_out:
                 print(out.rstrip())
+                last_out = out
             if "__KRYO_EXIT__:" in out:
                 code_raw = out.rsplit("__KRYO_EXIT__:", 1)[-1].strip().splitlines()[0]
                 try:

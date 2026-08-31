@@ -296,7 +296,9 @@ instance_group [
                 "dtype": "bfloat16",
                 "max_model_len": 512,
                 "max_num_seqs": 4,
-                "enforce_eager": False,
+                # Skip CUDA-graph capture. Graph capture can sit on a full GPU for
+                # 30+ minutes without ever binding the HTTP port.
+                "enforce_eager": True,
             },
             indent=2,
         )
@@ -318,6 +320,7 @@ def env_prefix(model: str, port: int, gpu: str) -> list[str]:
         "TRANSFORMERS_OFFLINE=1",
         "VLLM_ENABLE_V1_MULTIPROCESSING=0",
         "VLLM_NO_USAGE_STATS=1",
+        "PYTHONUNBUFFERED=1",
         "HOME=/root",
         "HF_HOME=/root/.cache/huggingface",
         "NVIDIA_VISIBLE_DEVICES=all",
@@ -346,6 +349,7 @@ def vllm_command(rootfs: Path, model: str, port: int, gpu: str) -> list[str]:
         str(rootfs),
         *env_prefix(model, port, gpu),
         python,
+        "-u",
         "-m",
         "vllm.entrypoints.openai.api_server",
         "--model",
@@ -361,6 +365,7 @@ def vllm_command(rootfs: Path, model: str, port: int, gpu: str) -> list[str]:
         "--dtype",
         "bfloat16",
         "--disable-log-stats",
+        "--enforce-eager",
     ]
 
 
@@ -391,15 +396,28 @@ def snapshot_name(server: str, size: str) -> str:
     return f"server-{server}-{size}"
 
 
+def _pump_stdout(proc: subprocess.Popen[str]) -> None:
+    if proc.stdout is None:
+        return
+    try:
+        for line in proc.stdout:
+            log(line.rstrip("\n"))
+    except OSError:
+        pass
+
+
 def start_process(cmd: list[str], env: dict[str, str] | None = None) -> subprocess.Popen[str]:
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         cmd,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        bufsize=1,
         start_new_session=True,
     )
+    threading.Thread(target=_pump_stdout, args=(proc,), daemon=True).start()
+    return proc
 
 
 def drain(proc: subprocess.Popen[str], limit: int = 4000) -> str:
