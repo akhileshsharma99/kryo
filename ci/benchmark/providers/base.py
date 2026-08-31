@@ -29,7 +29,7 @@ class Provider(Protocol):
         """Create a VM of this SKU (or `auto`) and wait until SSH works.
 
         If filesystem is set, attach (and create if needed) a persistent disk
-        in the launch region so golden tarballs survive VM teardown.
+        in the launch region so golden directories survive VM teardown.
         """
 
     def rsync(self, machine: Machine) -> None:

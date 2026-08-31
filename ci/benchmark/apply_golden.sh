@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Restore a golden tarball onto a stock Lambda GPU image. Not CRIU snapshots.
+# Restore a golden directory onto a stock Lambda GPU image. Not CRIU snapshots.
 set -euo pipefail
 
-SRC="${1:?source .tgz}"
+SRC="${1:?source directory}"
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.cargo/bin:$HOME/.local/bin:${PATH:-}"
 
-if [ ! -f "$SRC" ]; then
-  echo "golden tarball missing: $SRC" >&2
+if [ ! -f "$SRC/.golden-ok" ]; then
+  echo "golden directory missing or incomplete: $SRC" >&2
   exit 1
 fi
 
-sudo tar -C / -xzf "$SRC"
+# Do not overlay /home/.../kryo: the controller rsyncs this checkout first,
+# and a stale golden tree would clobber it.
+sudo rsync -a --exclude 'home/ubuntu/kryo/' "$SRC/" /
 owner="${USER:-ubuntu}"
 sudo chown -R "$owner:$owner" \
   "/home/$owner/.cargo" \
@@ -25,6 +27,12 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope >/dev/null || true
 sudo nvidia-smi -pm 1 || true
 sudo ldconfig || true
 
+if ! command -v criu >/dev/null || ! criu check >/dev/null 2>&1; then
+  sudo add-apt-repository -y ppa:criu/ppa
+  sudo apt-get update -qq
+  sudo apt-get install -y criu libprotobuf-c1 libnet1
+  sudo ldconfig || true
+fi
 if ! command -v criu >/dev/null; then
   echo "criu missing after golden apply" >&2
   exit 1
