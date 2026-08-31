@@ -186,7 +186,8 @@ def mount_rootfs(rootfs: Path, extra_binds: list[tuple[str, str]]) -> None:
     binds.extend(extra_binds)
     for src, rel in binds:
         dest = rootfs / rel
-        dest.mkdir(parents=True, exist_ok=True)
+        # Image rootfs is root-owned; mkdir without sudo fails (HF cache, models).
+        subprocess.run([*sudo(), "mkdir", "-p", str(dest)], check=True)
         if src and Path(src).exists():
             subprocess.run(
                 [*sudo(), "mount", "--bind", src, str(dest)],
