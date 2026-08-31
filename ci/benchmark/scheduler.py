@@ -352,8 +352,13 @@ def maybe_save_golden(
     plan: BenchPlan,
     *,
     force: bool = False,
+    job: Job | None = None,
 ) -> None:
-    """Pack golden once. Safe to call again; no-ops when the tarball exists."""
+    """Copy golden onto NFS once. Server benches skip this: packing 32B weights
+    blocked TTFT, and extra_weights already put models on the VM."""
+    if job is not None and job.scenario in SERVER_SCENARIOS:
+        print(f"skip golden pack for {job.scenario} (weights already on the VM)")
+        return
     if plan.golden.mode != "tarball":
         return
     if (
@@ -402,7 +407,7 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
         provider.run(machine, rebuild_kryo(), timeout=600)
         pooled.golden = True
         extra_weights(provider, machine, job)
-        maybe_save_golden(provider, machine, wanted, plan)
+        maybe_save_golden(provider, machine, wanted, plan, job=job)
         return
 
     applied = False
@@ -431,7 +436,7 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
 
     provider.run(machine, write_digest_command(wanted))
     extra_weights(provider, machine, job)
-    maybe_save_golden(provider, machine, wanted, plan, force=not applied)
+    maybe_save_golden(provider, machine, wanted, plan, force=not applied, job=job)
     pooled.golden = True
 
 

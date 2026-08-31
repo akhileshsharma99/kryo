@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Copy Kryo bench tools, venv, and weight caches onto a directory.
-# No gzip: compressing 32B weights onto NFS was slower than the benches.
+# Copy Kryo bench tools and venvs onto a raw NFS directory.
+# No tar, no gzip. Hugging Face weights are not copied (already on the VM).
 set -euo pipefail
 
 OUT="${1:?destination directory}"
@@ -26,7 +26,8 @@ add var/lib/kryo-bench
 add "home/${USER:-ubuntu}/.cargo"
 add "home/${USER:-ubuntu}/.rustup"
 add "home/${USER:-ubuntu}/.local"
-add "home/${USER:-ubuntu}/.cache/huggingface"
+# Hugging Face weights stay on the VM (extra_weights). Copying 32B onto NFS
+# with tar blocked the actual benches for 15+ minutes.
 add "home/${USER:-ubuntu}/.cache/uv"
 add "home/${USER:-ubuntu}/kryo/benchmarks/.venv"
 add "home/${USER:-ubuntu}/kryo/python/.venv"
@@ -72,13 +73,20 @@ if [ -f "$OUT/.golden-ok" ]; then
 fi
 sudo rm -rf "$OUT"
 sudo mkdir -p "$OUT"
-# tar --files-from includes directory trees. rsync --files-from does not
-# recurse listed dirs, which packed an 11M empty skeleton.
-sudo tar -C / --exclude='**/.kryo/snapshots' --exclude='**/__pycache__' \
-  --warning=no-file-changed --ignore-failed-read -cf - --files-from="$list" \
-  | sudo tar -C "$OUT" -xf -
+# Raw directory copy. No tar, no gzip.
+while read -r rel; do
+  src="/$rel"
+  [ -e "$src" ] || continue
+  dest="$OUT/$rel"
+  sudo mkdir -p "$(dirname "$dest")"
+  if [ -d "$src" ]; then
+    sudo rsync -a --exclude '.kryo/snapshots' --exclude '__pycache__' "$src/" "$dest/"
+  else
+    sudo rsync -a "$src" "$dest"
+  fi
+done <"$list"
 size="$(sudo du -sb "$OUT" | awk '{print $1}')"
-if [ "${size:-0}" -lt 1000000000 ]; then
+if [ "${size:-0}" -lt 50000000 ]; then
   echo "golden too small (${size:-0} bytes); refusing to stamp a stub image" >&2
   sudo rm -rf "$OUT"
   exit 1
