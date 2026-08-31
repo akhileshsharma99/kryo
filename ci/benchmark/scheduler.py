@@ -415,6 +415,9 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
             print(f"golden hit filesystem {nfs}")
             provider.run(machine, apply_command(nfs), timeout=1800)
             applied = True
+            # apply rsyncs NFS onto / including an old /home/ubuntu/kryo; put
+            # this checkout back so bench script fixes actually run.
+            provider.rsync(machine)
 
     if not applied:
         print(f"golden miss {wanted}; running setup.sh")

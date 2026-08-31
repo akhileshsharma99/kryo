@@ -10,7 +10,9 @@ if [ ! -f "$SRC/.golden-ok" ]; then
   exit 1
 fi
 
-sudo rsync -a "$SRC/" /
+# Do not overlay /home/.../kryo: the controller rsyncs this checkout first,
+# and a stale golden tree would clobber bench-script fixes.
+sudo rsync -a --exclude 'home/ubuntu/kryo/' "$SRC/" /
 owner="${USER:-ubuntu}"
 sudo chown -R "$owner:$owner" \
   "/home/$owner/.cargo" \
