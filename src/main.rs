@@ -144,20 +144,18 @@ fn create_snapshot(
         .unwrap_or(root_pid),
         None => wait_for_signal(child.child_mut(), &mut signals, root_pid)?,
     };
-    // Frontends (vLLM API, Triton HTTP) fork CUDA into EngineCore. Dump the
-    // GPU PID; CRIU still checkpoints the tree from root_pid.
-    let gpu_pid = CudaCheckpoint::gpu_pid_in_tree(root_pid);
-    let workload_pid = if gpu_pid != root_pid {
-        gpu_pid
-    } else {
-        hinted_pid
-    };
-
-    snapshot.set_workload_pid(workload_pid)?;
-
+    // Frontends (vLLM API, Triton HTTP) fork CUDA into EngineCore plus
+    // siblings. Lock every GPU PID so CRIU's cuda plugin finds restore
+    // threads; CRIU still checkpoints the tree from root_pid.
     check_for_interruption(&mut signals)?;
-    CudaCheckpoint::suspend(workload_pid)?;
-    child.mark_cuda_suspended(workload_pid);
+    let locked = CudaCheckpoint::suspend_tree(root_pid)?;
+    let workload_pid = locked
+        .iter()
+        .copied()
+        .find(|pid| *pid != root_pid)
+        .unwrap_or(hinted_pid);
+    snapshot.set_workload_pid(workload_pid)?;
+    child.mark_cuda_suspended(locked);
     check_for_interruption(&mut signals)?;
 
     let criu = Criu::new(&images_dir);
@@ -335,16 +333,13 @@ fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let run_result = (|| -> Result<(), Box<dyn std::error::Error>> {
         let root_pid = criu.restore_detached(lazy_daemon.is_some())?;
-        // CRIU may keep dump-time PIDs, but siblings without CUDA confuse
-        // cuda-checkpoint. Re-discover the GPU PID in the restored tree.
-        let gpu_pid = CudaCheckpoint::gpu_pid_in_tree(root_pid);
-        let workload_pid = if gpu_pid != root_pid {
-            gpu_pid
-        } else {
-            snapshot.metadata.workload_pid.unwrap_or(root_pid)
-        };
-
-        CudaCheckpoint::resume(workload_pid)?;
+        let extra = snapshot
+            .metadata
+            .workload_pid
+            .map(|pid| vec![pid])
+            .unwrap_or_default();
+        CudaCheckpoint::resume_tree(root_pid, &extra)?;
+        let workload_pid = CudaCheckpoint::gpu_pid_in_tree(root_pid);
         // SIGUSR2 is often ignored after CUDA restore; SIGRTMIN+1 is not.
         #[cfg(target_os = "linux")]
         send_signal(workload_pid, libc::SIGRTMIN() + 1)?;
@@ -363,7 +358,7 @@ fn cmd_run(snapshot_name: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 struct ChildGuard {
     child: Child,
-    suspended_cuda_pid: Option<u32>,
+    suspended_cuda_pids: Vec<u32>,
     armed: bool,
 }
 
@@ -371,7 +366,7 @@ impl ChildGuard {
     fn new(child: Child) -> Self {
         Self {
             child,
-            suspended_cuda_pid: None,
+            suspended_cuda_pids: Vec::new(),
             armed: true,
         }
     }
@@ -384,12 +379,12 @@ impl ChildGuard {
         &mut self.child
     }
 
-    fn mark_cuda_suspended(&mut self, pid: u32) {
-        self.suspended_cuda_pid = Some(pid);
+    fn mark_cuda_suspended(&mut self, pids: Vec<u32>) {
+        self.suspended_cuda_pids = pids;
     }
 
     fn mark_checkpointed(&mut self) {
-        self.suspended_cuda_pid = None;
+        self.suspended_cuda_pids.clear();
     }
 
     fn disarm(&mut self) {
@@ -403,8 +398,8 @@ impl Drop for ChildGuard {
             return;
         }
 
-        if let Some(pid) = self.suspended_cuda_pid {
-            let _ = CudaCheckpoint::resume(pid);
+        for pid in &self.suspended_cuda_pids {
+            let _ = CudaCheckpoint::resume(*pid);
         }
 
         if let Ok(process_group) = i32::try_from(self.child.id()) {

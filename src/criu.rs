@@ -1,7 +1,9 @@
 //! CRIU (Checkpoint/Restore in Userspace) wrapper
 
 use crate::{Error, Result};
+use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -21,16 +23,9 @@ impl Criu {
     }
 
     fn nvidia_externals(command: &mut Command, restore: bool) {
-        // NVIDIA char devices (major 195) cannot be dumped. Mark them
-        // external so CRIU reconnects to the host nodes on restore.
-        // 255=nvidiactl 254=nvidia-uvm 253=nvidia-modeset 0=nvidia0
-        const DEVS: &[(&str, &str, &str)] = &[
-            ("195/255", "nvidiactl", "/dev/nvidiactl"),
-            ("195/254", "nvidiauvm", "/dev/nvidia-uvm"),
-            ("195/253", "nvidiamodeset", "/dev/nvidia-modeset"),
-            ("195/0", "nvidia0", "/dev/nvidia0"),
-        ];
-        for (majmin, name, path) in DEVS {
+        // NVIDIA char devices cannot be dumped. Mark every node under
+        // /dev/nvidia* external so Triton fds (nvidiactl, caps, uvm) reconnect.
+        for (majmin, name, path) in nvidia_char_devices() {
             command.arg("--external");
             if restore {
                 command.arg(format!("{name}:{path}"));
@@ -190,4 +185,62 @@ impl Criu {
 
         Ok(pid)
     }
+}
+
+fn linux_majmin(rdev: u64) -> (u32, u32) {
+    let major = ((rdev >> 8) & 0xfff) as u32;
+    let minor = ((rdev & 0xff) | ((rdev >> 12) & 0xfff00)) as u32;
+    (major, minor)
+}
+
+fn nvidia_char_devices() -> Vec<(String, String, String)> {
+    let mut by_majmin: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for (majmin, name, path) in [
+        ("195/255", "nvidiactl", "/dev/nvidiactl"),
+        ("195/254", "nvidiauvm", "/dev/nvidia-uvm"),
+        ("195/253", "nvidiamodeset", "/dev/nvidia-modeset"),
+        ("195/0", "nvidia0", "/dev/nvidia0"),
+    ] {
+        by_majmin.insert(
+            majmin.to_string(),
+            (name.to_string(), path.to_string()),
+        );
+    }
+    for dir in ["/dev", "/dev/nvidia-caps"] {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(fname) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if dir == "/dev" && !fname.starts_with("nvidia") {
+                continue;
+            }
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            if meta.rdev() == 0 {
+                continue;
+            }
+            let (maj, min) = linux_majmin(meta.rdev());
+            if maj != 195 && !fname.starts_with("nvidia") {
+                continue;
+            }
+            let majmin = format!("{maj}/{min}");
+            let id: String = fname
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if id.is_empty() {
+                continue;
+            }
+            by_majmin.insert(majmin, (id, path.display().to_string()));
+        }
+    }
+    by_majmin
+        .into_iter()
+        .map(|(majmin, (name, path))| (majmin, name, path))
+        .collect()
 }

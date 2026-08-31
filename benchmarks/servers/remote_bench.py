@@ -205,6 +205,22 @@ def mount_rootfs(rootfs: Path, extra_binds: list[tuple[str, str]]) -> None:
                 check=False,
                 capture_output=True,
             )
+    # CRIU needs a real devpts mount (bind of /dev/pts is still "devtmpfs").
+    pts = rootfs / "dev/pts"
+    subprocess.run(
+        [
+            *sudo(),
+            "mount",
+            "-t",
+            "devpts",
+            "-o",
+            "newinstance,ptmxmode=0666,mode=0620,gid=5",
+            "devpts",
+            str(pts),
+        ],
+        check=False,
+        capture_output=True,
+    )
 
 
 def unmount_rootfs(rootfs: Path) -> None:

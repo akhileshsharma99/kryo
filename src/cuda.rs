@@ -46,36 +46,80 @@ impl CudaCheckpoint {
         }
     }
 
-    /// PID in `root`'s process tree that actually holds a CUDA context.
+    /// Every PID in `root`'s tree that holds a CUDA context.
     ///
-    /// vLLM and Triton fork GPU work into a child (EngineCore). `--wait`
-    /// snapshots the frontend; cuda-checkpoint on that PID fails with
-    /// "Could not find restore thread". Prefer a descendant listed by
-    /// nvidia-smi, then any descendant `cuda-checkpoint --get-state` accepts.
-    pub fn gpu_pid_in_tree(root: u32) -> u32 {
+    /// vLLM/Triton put GPU memory on EngineCore *and* leave a sibling
+    /// CUDA PID. Locking only EngineCore makes CRIU's cuda plugin fail
+    /// ("no restore thread") on the sibling; restore then 500s.
+    pub fn gpu_pids_in_tree(root: u32) -> Vec<u32> {
         let tree = proc_tree(root);
-        let hits: Vec<u32> = nvidia_compute_pids()
+        let mut pids: Vec<u32> = nvidia_compute_pids()
             .into_iter()
             .filter(|pid| tree.contains(pid))
             .collect();
-        let chosen = hits
-            .iter()
-            .copied()
-            .find(|pid| *pid != root)
-            .or_else(|| hits.first().copied());
-        if let Some(pid) = chosen {
-            if pid != root {
+        if pids.is_empty() {
+            for pid in &tree {
+                if Self::state(*pid).is_ok() {
+                    pids.push(*pid);
+                }
+            }
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        if pids.is_empty() {
+            pids.push(root);
+        }
+        for pid in &pids {
+            if *pid != root {
                 eprintln!("kryo: cuda-checkpoint pid {pid} (spawned {root})");
             }
-            return pid;
         }
-        for pid in &tree {
-            if *pid != root && Self::state(*pid).is_ok() {
-                eprintln!("kryo: cuda-checkpoint pid {pid} via get-state (spawned {root})");
-                return *pid;
+        pids
+    }
+
+    pub fn gpu_pid_in_tree(root: u32) -> u32 {
+        let pids = Self::gpu_pids_in_tree(root);
+        pids.iter()
+            .copied()
+            .find(|pid| *pid != root)
+            .unwrap_or(pids[0])
+    }
+
+    pub fn suspend_tree(root: u32) -> Result<Vec<u32>> {
+        let pids = Self::gpu_pids_in_tree(root);
+        let mut locked = Vec::new();
+        for pid in pids {
+            if let Err(error) = Self::suspend(pid) {
+                for done in &locked {
+                    let _ = Self::resume(*done);
+                }
+                return Err(error);
+            }
+            locked.push(pid);
+        }
+        Ok(locked)
+    }
+
+    pub fn resume_tree(root: u32, extra: &[u32]) -> Result<()> {
+        let mut pids = Self::gpu_pids_in_tree(root);
+        for pid in extra {
+            if *pid != 0 && !pids.contains(pid) {
+                pids.push(*pid);
             }
         }
-        root
+        pids.sort_unstable();
+        pids.dedup();
+        let mut last_err = None;
+        for pid in pids {
+            if let Err(error) = Self::resume(pid) {
+                eprintln!("kryo: cuda-checkpoint resume pid {pid} failed: {error}");
+                last_err = Some(error);
+            }
+        }
+        match last_err {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn state(pid: u32) -> Result<String> {
