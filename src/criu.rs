@@ -20,9 +20,30 @@ impl Criu {
         }
     }
 
+    fn nvidia_externals(command: &mut Command, restore: bool) {
+        // NVIDIA char devices (major 195) cannot be dumped. Mark them
+        // external so CRIU reconnects to the host nodes on restore.
+        // 255=nvidiactl 254=nvidia-uvm 253=nvidia-modeset 0=nvidia0
+        const DEVS: &[(&str, &str, &str)] = &[
+            ("195/255", "nvidiactl", "/dev/nvidiactl"),
+            ("195/254", "nvidiauvm", "/dev/nvidia-uvm"),
+            ("195/253", "nvidiamodeset", "/dev/nvidia-modeset"),
+            ("195/0", "nvidia0", "/dev/nvidia0"),
+        ];
+        for (majmin, name, path) in DEVS {
+            command.arg("--external");
+            if restore {
+                command.arg(format!("{name}:{path}"));
+            } else {
+                command.arg(format!("dev[{majmin}]:{name}"));
+            }
+        }
+    }
+
     /// Checkpoint a process by PID
     pub fn checkpoint(&self, pid: u32) -> Result<()> {
-        let status = Command::new("criu")
+        let mut command = Command::new("criu");
+        command
             .args(["dump", "-t", &pid.to_string()])
             .arg("-D")
             .arg(&self.images_dir)
@@ -30,8 +51,9 @@ impl Criu {
             .arg("--tcp-close")
             .arg("--ext-unix-sk")
             .arg("--file-locks")
-            .arg("--link-remap")
-            .status()?;
+            .arg("--link-remap");
+        Self::nvidia_externals(&mut command, false);
+        let status = command.status()?;
 
         if status.success() {
             Ok(())
@@ -108,6 +130,7 @@ impl Criu {
             .arg("--ext-unix-sk")
             .arg("--file-locks")
             .arg("--link-remap");
+        Self::nvidia_externals(&mut command, true);
         if Self::lazy_pages_requested() {
             command.arg("--lazy-pages");
         }
@@ -140,6 +163,7 @@ impl Criu {
             .arg("-d") // Detach
             .arg("--pidfile")
             .arg(&pidfile);
+        Self::nvidia_externals(&mut command, true);
         if lazy_pages {
             command.arg("--lazy-pages");
         }
