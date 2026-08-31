@@ -60,12 +60,27 @@ done
 
 inject_nvidia() {
   echo "copying host NVIDIA driver libs into rootfs"
-  while read -r lib; do
-    [ -e "$lib" ] || continue
-    rel="${lib#/}"
+  # ldconfig only lists libcuda.so.1, which is a symlink to libcuda.so.<driver>.
+  # cp -a of the symlink without the target leaves a broken chroot (vLLM:
+  # "libcuda.so.1: cannot open shared object file").
+  copy_lib() {
+    local src="$1"
+    [ -e "$src" ] || return 0
+    local rel="${src#/}"
     sudo mkdir -p "$DEST/$(dirname "$rel")"
-    sudo cp -a "$lib" "$DEST/$rel"
+    sudo cp -a "$src" "$DEST/$rel"
+    if [ -L "$src" ]; then
+      local real
+      real="$(readlink -f "$src" || true)"
+      if [ -n "$real" ] && [ "$real" != "$src" ]; then
+        copy_lib "$real"
+      fi
+    fi
+  }
+  while read -r lib; do
+    copy_lib "$lib"
   done < <(ldconfig -p | awk -F'=> ' '/libcuda|libnvidia/{print $2}' | sort -u)
+  sudo chroot "$DEST" ldconfig >/dev/null 2>&1 || true
 }
 
 inject_nvidia || true

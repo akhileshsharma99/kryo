@@ -114,10 +114,12 @@ def kill_port(port: int) -> None:
     )
 
 
-def wait_http(url: str, timeout: int) -> None:
+def wait_http(url: str, timeout: int, proc: subprocess.Popen[str] | None = None) -> None:
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"server exited {proc.returncode}: {drain(proc)}")
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 if 200 <= response.status < 500:
@@ -426,7 +428,7 @@ def first_token(
     started = time.perf_counter()
     proc = start_process([*sudo(), *cmd] if os.geteuid() != 0 else cmd, env=env)
     try:
-        wait_http(health, timeout)
+        wait_http(health, timeout, proc)
         last_error: Exception | None = None
         body: dict[str, Any] = {}
         for payload in payloads:
