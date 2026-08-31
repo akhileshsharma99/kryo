@@ -30,6 +30,7 @@ impl Criu {
             .arg("--tcp-close")
             .arg("--ext-unix-sk")
             .arg("--file-locks")
+            .arg("--link-remap")
             .status()?;
 
         if status.success() {
@@ -105,7 +106,8 @@ impl Criu {
             .arg("--shell-job")
             .arg("--tcp-close")
             .arg("--ext-unix-sk")
-            .arg("--file-locks");
+            .arg("--file-locks")
+            .arg("--link-remap");
         if Self::lazy_pages_requested() {
             command.arg("--lazy-pages");
         }
@@ -134,6 +136,7 @@ impl Criu {
             .arg("--tcp-close")
             .arg("--ext-unix-sk")
             .arg("--file-locks")
+            .arg("--link-remap")
             .arg("-d") // Detach
             .arg("--pidfile")
             .arg(&pidfile);
