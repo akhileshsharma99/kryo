@@ -324,12 +324,6 @@ def env_prefix(model: str, port: int, gpu: str) -> list[str]:
 
 
 def vllm_command(rootfs: Path, model: str, port: int, gpu: str) -> list[str]:
-    scripts = rootfs / "scripts"
-    subprocess.run([*sudo(), "mkdir", "-p", str(scripts)], check=True)
-    subprocess.run(
-        [*sudo(), "cp", str(HERE / "vllm_server.py"), str(scripts / "vllm_server.py")],
-        check=True,
-    )
     python = which_in_rootfs(
         rootfs,
         [
@@ -342,12 +336,28 @@ def vllm_command(rootfs: Path, model: str, port: int, gpu: str) -> list[str]:
             "usr/bin/python3",
         ],
     ) or "/usr/bin/python3.12"
+    gpu_util = "0.85" if "32B" in model else "0.90"
+    max_len = "256" if "32B" in model else "512"
     return [
         "chroot",
         str(rootfs),
         *env_prefix(model, port, gpu),
         python,
-        "/scripts/vllm_server.py",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        model,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--gpu-memory-utilization",
+        gpu_util,
+        "--max-model-len",
+        max_len,
+        "--dtype",
+        "bfloat16",
+        "--disable-log-stats",
     ]
 
 
@@ -517,12 +527,17 @@ def bench_server(
     kill_port(port)
     extra_binds: list[tuple[str, str]] = []
     if server == "vllm":
-        extra_binds.append((str(HERE), "scripts"))
         cmd = vllm_command(rootfs, model, port, gpu)
-        health = f"http://127.0.0.1:{port}/health"
-        generate = f"http://127.0.0.1:{port}/generate"
-        payloads: list[dict[str, Any]] = [{"prompt": "Hello, world!"}]
-        signal_checkpoint = True
+        health = f"http://127.0.0.1:{port}/v1/models"
+        generate = f"http://127.0.0.1:{port}/v1/completions"
+        payloads: list[dict[str, Any]] = [
+            {
+                "model": model,
+                "prompt": "Hello, world!",
+                "max_tokens": 1,
+                "temperature": 0.0,
+            }
+        ]
     else:
         extra_binds.append(("/tmp/triton-repos", "models"))
         write_triton_repo(Path(f"/tmp/triton-repos/{size}"), model)
@@ -536,7 +551,6 @@ def bench_server(
                 "parameters": {"max_tokens": 1, "stream": False},
             },
         ]
-        signal_checkpoint = False
 
     mount_rootfs(rootfs, extra_binds)
     name = snapshot_name(server, size)
@@ -563,7 +577,7 @@ def bench_server(
             "samples": colds,
             "total": {"mean": mean(colds)},
         }
-        wait_seconds = None if signal_checkpoint else max(int(mean(colds)) + 45, 90)
+        wait_seconds = max(int(mean(colds)) + 45, 90)
 
         log(f"=== {server} {size} snapshot create (wait={wait_seconds}) ===")
         create_snapshot(name, cmd, wait=wait_seconds, timeout=timeout * 2, port=port)

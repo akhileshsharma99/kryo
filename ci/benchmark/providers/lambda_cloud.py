@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -762,13 +763,73 @@ class LambdaProvider:
         )
 
     def run(self, machine: Machine, command: str, timeout: int | None = None) -> None:
-        """Run a remote shell command, streaming output."""
+        """Run a remote shell command, streaming output.
+
+        Commands that may run for 10+ minutes (setup, docker pull, server
+        benches) are detached with nohup so a dropped laptop SSH does not
+        kill the VM-side process.
+        """
+        if timeout is not None and timeout >= 600:
+            self._run_nohup(machine, command, timeout)
+            return
         conn = self._conn(machine)
         subprocess.run(
             [require_bin("ssh"), *ssh_base(conn.identity, conn.ip), command],
             check=True,
             timeout=timeout,
         )
+
+    def _run_nohup(self, machine: Machine, command: str, timeout: int) -> None:
+        """Start `command` under nohup, then poll the log until it exits."""
+        conn = self._conn(machine)
+        stamp = f"{os.getpid()}-{machine.id[:8]}"
+        log_path = f"/tmp/kryo-nohup-{stamp}.log"
+        exit_path = f"/tmp/kryo-nohup-{stamp}.exit"
+        inner = f"({command})\nprintf '%s\\n' $? > {exit_path}"
+        start = (
+            f"rm -f {shlex.quote(exit_path)}; "
+            f"nohup bash -lc {shlex.quote(inner)} "
+            f"> {shlex.quote(log_path)} 2>&1 < /dev/null & echo $!"
+        )
+        print(f"detached {machine.id} -> {log_path}")
+        subprocess.run(
+            [require_bin("ssh"), *ssh_base(conn.identity, conn.ip), start],
+            check=True,
+            timeout=60,
+        )
+        deadline = time.monotonic() + timeout
+        poll = (
+            f"tail -n 50 {shlex.quote(log_path)} 2>/dev/null || true; "
+            f"if [ -f {shlex.quote(exit_path)} ]; then "
+            f"echo __KRYO_EXIT__:$(cat {shlex.quote(exit_path)}); fi"
+        )
+        while time.monotonic() < deadline:
+            try:
+                result = subprocess.run(
+                    [require_bin("ssh"), *ssh_base(conn.identity, conn.ip), poll],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                print(f"ssh poll lost ({error}); retrying in 15s")
+                time.sleep(15)
+                continue
+            out = (result.stdout or "") + (result.stderr or "")
+            if out.strip():
+                print(out.rstrip())
+            if "__KRYO_EXIT__:" in out:
+                code_raw = out.rsplit("__KRYO_EXIT__:", 1)[-1].strip().splitlines()[0]
+                try:
+                    code = int(code_raw)
+                except ValueError:
+                    code = 1
+                if code != 0:
+                    raise subprocess.CalledProcessError(code, command)
+                return
+            time.sleep(20)
+        raise TimeoutError(f"remote command exceeded {timeout}s ({log_path})")
 
     def run_output(self, machine: Machine, command: str, timeout: int | None = None) -> str:
         """Run a remote shell command and return stdout."""
