@@ -378,6 +378,8 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
     machine = pooled.machine
     provider.rsync(machine)
     if pooled.golden:
+        print(f"golden reuse on {machine.id}; rebuilding kryo")
+        provider.run(machine, rebuild_kryo(), timeout=600)
         extra_weights(provider, machine, job)
         return
 

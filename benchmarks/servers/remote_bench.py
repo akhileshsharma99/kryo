@@ -100,11 +100,19 @@ def kryo_cmd() -> list[str]:
 
 
 def kill_tree(pid: int) -> None:
+    # vLLM EngineCore setsid()s into its own group, so a userspace killpg on the
+    # sudo/chroot pid often PermissionErrors and leaves the GPU process alive.
     try:
         os.killpg(pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+    subprocess.run([*sudo(), "kill", "-9", f"-{pid}"], check=False, capture_output=True)
     subprocess.run([*sudo(), "kill", "-9", str(pid)], check=False, capture_output=True)
+    subprocess.run(
+        [*sudo(), "pkill", "-9", "-f", "VLLM::EngineCore"],
+        check=False,
+        capture_output=True,
+    )
 
 
 def kill_port(port: int) -> None:
@@ -320,6 +328,7 @@ def env_prefix(model: str, port: int, gpu: str) -> list[str]:
         "TRANSFORMERS_OFFLINE=1",
         "VLLM_ENABLE_V1_MULTIPROCESSING=0",
         "VLLM_NO_USAGE_STATS=1",
+        "UV_USE_IO_URING=0",
         "PYTHONUNBUFFERED=1",
         "HOME=/root",
         "HF_HOME=/root/.cache/huggingface",
@@ -463,13 +472,14 @@ def first_token(
     finally:
         kill_tree(proc.pid)
         kill_port(port)
-        leftover = ""
         try:
-            leftover, _ = proc.communicate(timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            leftover = drain(proc)
-        if leftover:
-            log(leftover[-2000:])
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc.pid)
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 def create_snapshot(
@@ -715,6 +725,12 @@ def main() -> None:
 
     os.environ.setdefault("KRYO_LAZY_PAGES", "0")
     subprocess.run([*sudo(), "mkdir", "-p", str(SNAP_ROOT)], check=True)
+    # CRIU cannot dump anon_inode:[io_uring]. Dedicated bench VMs: turn
+    # io_uring off before the server starts so the dump has nothing to skip.
+    subprocess.run(
+        [*sudo(), "sh", "-c", "echo 2 > /proc/sys/kernel/io_uring_disabled"],
+        check=False,
+    )
 
     images = ensure_docker_images([args.server])
     if args.server == "vllm" and "vllm" in images:

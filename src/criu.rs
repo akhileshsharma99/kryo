@@ -28,6 +28,8 @@ impl Criu {
             .arg(&self.images_dir)
             .arg("--shell-job")
             .arg("--tcp-close")
+            .arg("--ext-unix-sk")
+            .arg("--file-locks")
             .status()?;
 
         if status.success() {
@@ -101,7 +103,9 @@ impl Criu {
             .arg("-D")
             .arg(&self.images_dir)
             .arg("--shell-job")
-            .arg("--tcp-close");
+            .arg("--tcp-close")
+            .arg("--ext-unix-sk")
+            .arg("--file-locks");
         if Self::lazy_pages_requested() {
             command.arg("--lazy-pages");
         }
@@ -128,6 +132,8 @@ impl Criu {
             .arg(&self.images_dir)
             .arg("--shell-job")
             .arg("--tcp-close")
+            .arg("--ext-unix-sk")
+            .arg("--file-locks")
             .arg("-d") // Detach
             .arg("--pidfile")
             .arg(&pidfile);

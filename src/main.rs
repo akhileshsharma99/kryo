@@ -134,7 +134,7 @@ fn create_snapshot(
     let mut child = ChildGuard::new(child);
     let root_pid = child.id();
 
-    let workload_pid = match wait {
+    let hinted_pid = match wait {
         Some(seconds) => wait_for_duration(
             child.child_mut(),
             &mut signals,
@@ -143,6 +143,14 @@ fn create_snapshot(
         )?
         .unwrap_or(root_pid),
         None => wait_for_signal(child.child_mut(), &mut signals, root_pid)?,
+    };
+    // Frontends (vLLM API, Triton HTTP) fork CUDA into EngineCore. Dump the
+    // GPU PID; CRIU still checkpoints the tree from root_pid.
+    let gpu_pid = CudaCheckpoint::gpu_pid_in_tree(root_pid);
+    let workload_pid = if gpu_pid != root_pid {
+        gpu_pid
+    } else {
+        hinted_pid
     };
 
     snapshot.set_workload_pid(workload_pid)?;
