@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/akhileshsharma99/kryo/compare/v0.4.0...v0.4.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* store Lambda goldens as NFS directories instead of gzip tarballs ([#28](https://github.com/akhileshsharma99/kryo/issues/28)) ([cde781a](https://github.com/akhileshsharma99/kryo/commit/cde781a77dcdbbedc6224fb3c293eef8425c716b))
+
 ## [0.4.0](https://github.com/akhileshsharma99/kryo/compare/v0.3.0...v0.4.0) (2026-08-30)
 
 
