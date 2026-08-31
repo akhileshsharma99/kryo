@@ -1,4 +1,4 @@
-"""Content-addressed golden-image tarballs (tools + venv + weights, not CRIU)."""
+"""Content-addressed golden-image directories (tools + venv, not CRIU)."""
 
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ def digest(sku: str, driver: str, cuda: str) -> str:
 
 
 def local_path(sku: str, golden_digest: str) -> Path:
-    """Controller cache path for one golden tarball."""
+    """Controller cache path for one golden directory."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    return CACHE_DIR / f"{sku}-{golden_digest}.tgz"
+    return CACHE_DIR / f"{sku}-{golden_digest}"
 
 
 def nfs_dir(filesystem: str) -> str:
@@ -42,8 +42,8 @@ def nfs_dir(filesystem: str) -> str:
 
 
 def nfs_path(filesystem: str, sku: str, golden_digest: str) -> str:
-    """On-box path of a golden tarball on the attached filesystem."""
-    return f"{nfs_dir(filesystem)}/golden/{sku}-{golden_digest}.tgz"
+    """On-box path of a golden directory on the attached filesystem."""
+    return f"{nfs_dir(filesystem)}/golden/{sku}-{golden_digest}"
 
 
 def read_digest_command() -> str:
@@ -60,10 +60,10 @@ def write_digest_command(golden_digest: str) -> str:
 
 
 def pack_command(destination: str) -> str:
-    """Build a golden tarball at destination (NFS or /tmp)."""
+    """Copy the golden tree to destination (NFS directory)."""
     return f"bash kryo/ci/benchmark/pack_golden.sh {destination}"
 
 
 def apply_command(source: str) -> str:
-    """Extract a golden tarball onto the root disk."""
+    """Copy a golden directory onto the root disk."""
     return f"bash kryo/ci/benchmark/apply_golden.sh {source}"

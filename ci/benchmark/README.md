@@ -58,14 +58,16 @@ doppler run -- uv run --directory ci/benchmark python -u run.py --reap-stale
 session. `--keep` leaves the pool running when the process exits (you must
 `--destroy` later).
 
-On a **new** VM the scheduler restores a golden tarball (CRIU, cuda-checkpoint,
-Rust/uv, CUDA torch venv, HuggingFace cache) instead of running `setup.sh`
-again. Lambda cannot snapshot the root disk as a custom AMI, so the tarball
-lives on a persistent filesystem attached at launch (`/lambda/nfs/kryo-golden`).
-CRIU GPU snapshots stay out of that image. Each VM dumps once, then reuses
-that dump for every timed restore on that box.
+On a **new** VM the scheduler copies a golden directory (CRIU, cuda-checkpoint,
+Rust/uv, CUDA torch venv) instead of running `setup.sh` again. Lambda cannot
+snapshot the root disk as a custom AMI, so the tree lives on a persistent
+filesystem attached at launch (`/lambda/nfs/kryo-golden`). It is a directory,
+not a gzip tarball: compressing Hugging Face weights was slower than the
+benches, so weights stay on the VM (`extra_weights`). CRIU GPU snapshots stay
+out of that image. Each VM dumps once, then reuses that dump for every timed
+restore on that box.
 
-The first run in a region still pays `setup.sh`, then packs the tarball. Later
+The first run in a region still pays `setup.sh`, then copies the tree. Later
 CI jobs and idle-reaped replacements apply it and only rebuild Kryo. Filesystem
 storage is billed by Lambda; `golden.mode: setup` disables packing if you do
 not want that.
@@ -78,7 +80,7 @@ When `tag` is set (Release always passes the new tag):
 
 1. Upload `kryo-benchmarks.json`, `.svg`, and `.md` as **release assets**
 2. Append a chart + table to the **release notes**
-3. Open a `chore:` PR that updates `benchmarks/results/<tag>.json`, the README chart, and the README table
+3. Open a `chore:` PR that updates `benchmarks/results/results.json`, the README chart, and the README table
 
 Dispatch without `tag` only uploads Actions artifacts. Bench failure does not
 un-publish crates or PyPI; it fails the GPU workflow only.

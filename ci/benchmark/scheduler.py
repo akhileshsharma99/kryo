@@ -22,7 +22,6 @@ from typing import Any
 from config import LLM_SCENARIOS, BenchPlan, Job
 from golden import apply_command, nfs_path, read_digest_command, write_digest_command
 from golden import digest as golden_digest
-from golden import local_path as golden_local_path
 from golden import pack_command as pack_golden_command
 from providers import get_provider
 from providers.base import Machine, Provider
@@ -324,27 +323,24 @@ def extra_weights(provider: Provider, machine: Machine, job: Job) -> None:
 def save_golden(
     provider: Provider, machine: Machine, sku: str, wanted: str, plan: BenchPlan
 ) -> None:
-    """Pack the golden image onto NFS and/or the controller. Untimed."""
-    dest = "/tmp/kryo-golden.tgz"
-    if plan.golden.store == "filesystem" and machine.filesystem:
-        dest = nfs_path(machine.filesystem, sku, wanted)
-        parent = dest.rsplit("/", 1)[0]
-        provider.run(machine, f"mkdir -p {shlex.quote(parent)}")
+    """Copy the golden tree onto NFS. Untimed. No gzip."""
+    if not (plan.golden.store == "filesystem" and machine.filesystem):
+        print("golden.store is not filesystem; skip packing (no local gzip copy)")
+        return
+    dest = nfs_path(machine.filesystem, sku, wanted)
+    parent = dest.rsplit("/", 1)[0]
+    provider.run(machine, f"mkdir -p {shlex.quote(parent)}")
     print(f"packing golden to {dest}")
     provider.run(machine, pack_golden_command(dest), timeout=3600)
-    if dest == "/tmp/kryo-golden.tgz":
-        cache = golden_local_path(sku, wanted)
-        provider.get(machine, dest, cache)
-        print(f"golden cached locally {cache.name}")
 
 
 def golden_on_filesystem(provider: Provider, machine: Machine, wanted: str) -> bool:
-    """True if this SKU's golden tarball is already on the attached filesystem."""
+    """True if this SKU's golden directory is already on the attached filesystem."""
     if not machine.filesystem:
         return False
     nfs = nfs_path(machine.filesystem, machine.sku, wanted)
     have = provider.run_output(
-        machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
+        machine, f"test -f {shlex.quote(nfs)}/.golden-ok && echo yes || echo no"
     ).strip()
     return have == "yes"
 
@@ -357,7 +353,7 @@ def maybe_save_golden(
     *,
     force: bool = False,
 ) -> None:
-    """Pack golden once. Safe to call again; no-ops when the tarball exists."""
+    """Copy golden onto NFS once. Safe to call again; no-ops when the directory exists."""
     if plan.golden.mode != "tarball":
         return
     if (
@@ -369,11 +365,11 @@ def maybe_save_golden(
     try:
         save_golden(provider, machine, machine.sku, wanted, plan)
     except Exception as error:
-        print(f"warning: could not save golden tarball: {error}")
+        print(f"warning: could not save golden directory: {error}")
 
 
 def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan) -> None:
-    """Untimed image bring-up: restore a golden tarball, or run setup.sh once."""
+    """Untimed image bring-up: restore a golden directory, or run setup.sh once."""
     machine = pooled.machine
     provider.rsync(machine)
     if pooled.golden:
@@ -413,19 +409,15 @@ def ensure_golden(provider: Provider, pooled: Pooled, job: Job, plan: BenchPlan)
     if machine.filesystem:
         nfs = nfs_path(machine.filesystem, machine.sku, wanted)
         have = provider.run_output(
-            machine, f"test -f {shlex.quote(nfs)} && echo yes || echo no"
+            machine, f"test -f {shlex.quote(nfs)}/.golden-ok && echo yes || echo no"
         ).strip()
         if have == "yes":
             print(f"golden hit filesystem {nfs}")
             provider.run(machine, apply_command(nfs), timeout=1800)
             applied = True
-
-    cache = golden_local_path(machine.sku, wanted)
-    if not applied and cache.is_file():
-        print(f"golden hit local cache {cache.name}")
-        provider.put(machine, cache, "/tmp/kryo-golden.tgz")
-        provider.run(machine, apply_command("/tmp/kryo-golden.tgz"), timeout=1800)
-        applied = True
+            # apply rsyncs NFS onto / including an old /home/ubuntu/kryo; put
+            # this checkout back so the current scripts actually run.
+            provider.rsync(machine)
 
     if not applied:
         print(f"golden miss {wanted}; running setup.sh")

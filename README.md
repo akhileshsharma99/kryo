@@ -186,7 +186,7 @@ See [examples/](examples/) for more.
 Time to first inference on a real NVIDIA GPU: a fresh Python process vs restoring a Kryo snapshot. The page cache is dropped first, so weights are read from disk like a new pod. Creating the snapshot is a deploy step, not part of the restore time.
 
 <!-- BENCHMARK_RESULTS:START -->
-![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg)
+![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg?v=v0.4.0-2ac69be85569)
 
 release `v0.4.0`
 

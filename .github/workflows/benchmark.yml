@@ -126,7 +126,7 @@ jobs:
             --markdown "$RUNNER_TEMP/kryo-benchmarks.md" \
             --patch-readme README.md
           if [ -n "${{ inputs.tag }}" ]; then
-            cp benchmarks/results/latest.json "benchmarks/results/${{ inputs.tag }}.json"
+            cp benchmarks/results/latest.json benchmarks/results/results.json
           fi
           echo "have_json=true" >> "$GITHUB_OUTPUT"
 
@@ -177,5 +177,5 @@ jobs:
           base: ${{ github.event.repository.default_branch }}
           add-paths: |
             README.md
-            benchmarks/results/${{ inputs.tag }}.json
+            benchmarks/results/results.json
             benchmarks/results/charts/cold-vs-kryo.svg

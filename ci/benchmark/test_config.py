@@ -14,7 +14,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from config import load_plan, parse_duration
-from format_results import merge_result_files
+from format_results import merge_result_files, readme_image
 from golden import digest as golden_digest
 from providers.lambda_cloud import parse_gha_name, should_reap_instance
 from scheduler import max_run_seconds
@@ -168,6 +168,24 @@ class MergeResultsTests(unittest.TestCase):
             self.assertEqual(merged["metadata"]["b"], 2)
             self.assertIn("yolo", merged["scenarios"])
             self.assertIn("qwen7", merged["scenarios"])
+
+
+class ReadmeImageTests(unittest.TestCase):
+    def test_cache_key_changes_with_results(self) -> None:
+        first = {
+            "metadata": {"release_tag": "v0.4.0"},
+            "scenarios": {"yolo": {"cold": {"total": {"mean": 3.4}}}},
+        }
+        second = {
+            "metadata": {"release_tag": "v0.4.0"},
+            "scenarios": {"yolo": {"cold": {"total": {"mean": 3.5}}}},
+        }
+
+        first_image = readme_image(first, "benchmarks/results/chart.svg")
+        second_image = readme_image(second, "benchmarks/results/chart.svg")
+
+        self.assertRegex(first_image, r"\?v=v0\.4\.0-[0-9a-f]{12}$")
+        self.assertNotEqual(first_image, second_image)
 
 
 if __name__ == "__main__":

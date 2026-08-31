@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 GPU_LABELS = {
     "gpu_1x_a10": "NVIDIA A10",
@@ -176,18 +178,24 @@ def markdown_results(results: dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def readme_image(results: dict[str, Any], image_rel: str) -> str:
+    """Add a content-derived cache key so GitHub displays each new chart."""
+    encoded = json.dumps(results, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(encoded).hexdigest()[:12]
+    metadata = results.get("metadata")
+    tag = metadata.get("release_tag") if isinstance(metadata, dict) else None
+    version = f"{tag}-{digest}" if isinstance(tag, str) and tag else digest
+    separator = "&" if "?" in image_rel else "?"
+    return f"{image_rel}{separator}v={quote(version, safe='')}"
+
+
 def readme_block(results: dict[str, Any], image_rel: str) -> str:
     """README section between the result markers."""
     cap = caption(results.get("metadata"))
     table = markdown_results(results)
+    image = readme_image(results, image_rel)
     extra = f"{cap}\n\n" if cap else ""
-    return (
-        f"{README_START}\n"
-        f"![Cold start vs Kryo restore]({image_rel})\n\n"
-        f"{extra}"
-        f"{table}\n"
-        f"{README_END}"
-    )
+    return f"{README_START}\n![Cold start vs Kryo restore]({image})\n\n{extra}{table}\n{README_END}"
 
 
 def patch_readme(readme: Path, results: dict[str, Any], image_rel: str) -> None:
