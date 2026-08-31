@@ -186,26 +186,15 @@ See [examples/](examples/) for more.
 Time to first inference on a real NVIDIA GPU: a fresh Python process vs restoring a Kryo snapshot. The page cache is dropped first, so weights are read from disk like a new pod. Creating the snapshot is a deploy step, not part of the restore time.
 
 <!-- BENCHMARK_RESULTS:START -->
-![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg?v=v0.4.0-2ac69be85569)
+![Cold start vs Kryo restore](benchmarks/results/charts/cold-vs-kryo.svg?v=v0.4.1-3edb8add7a98)
 
-release `v0.4.0`
-
-**NVIDIA A10** · Lambda `gpu_1x_a10`
+release `v0.4.1`
 
 | Scenario | Cold start | Kryo restore | Speedup |
 |----------|------------|--------------|---------|
-| PyTorch CUDA | 1.75s | 1.01s | 1.7x |
-| YOLOv8n | 3.40s | 1.44s | 2.4x |
-| Qwen 2.5-0.5B | 5.40s | 2.49s | 2.2x |
-| Whisper-tiny | 5.01s | 1.73s | 2.9x |
-
-**NVIDIA H100** · Lambda `gpu_1x_h100_pcie`
-
-| Scenario | Cold start | Kryo restore | Speedup |
-|----------|------------|--------------|---------|
-| Qwen 2.5-7B | 24.11s | 17.19s | 1.4x |
-| torch.compile Qwen 2.5-7B | 26.34s | 17.37s | 1.5x |
-| Qwen 2.5-32B | 110.75s | 79.66s | 1.4x |
+| Qwen 2.5-7B | 22.16s | 17.59s | 1.3x |
+| torch.compile Qwen 2.5-7B | 23.66s | 17.52s | 1.4x |
+| Qwen 2.5-32B | 95.96s | 80.62s | 1.2x |
 <!-- BENCHMARK_RESULTS:END -->
 
 How these are measured: [benchmarks/](benchmarks/).
