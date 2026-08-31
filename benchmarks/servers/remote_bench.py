@@ -163,7 +163,7 @@ def which_in_rootfs(rootfs: Path, names: list[str]) -> str | None:
         seen.add(rel)
         path = rootfs / rel
         probe = subprocess.run(
-            [*sudo(), "test", "-e", str(path)],
+            [*sudo(), "test", "-x", str(path)],
             check=False,
             capture_output=True,
         )
@@ -330,8 +330,17 @@ def vllm_command(rootfs: Path, model: str, port: int, gpu: str) -> list[str]:
         check=True,
     )
     python = which_in_rootfs(
-        rootfs, ["python3", "opt/venv/bin/python3", "usr/bin/python3"]
-    ) or "/usr/bin/python3"
+        rootfs,
+        [
+            "python3.12",
+            "python3.10",
+            "python3",
+            "opt/venv/bin/python3",
+            "usr/bin/python3.12",
+            "usr/bin/python3.10",
+            "usr/bin/python3",
+        ],
+    ) or "/usr/bin/python3.12"
     return [
         "chroot",
         str(rootfs),
@@ -632,7 +641,16 @@ def ensure_docker_images(servers: list[str]) -> dict[str, str]:
 
 def probe_vllm_python(rootfs: Path) -> None:
     python = which_in_rootfs(
-        rootfs, ["python3", "opt/venv/bin/python3", "usr/bin/python3"]
+        rootfs,
+        [
+            "python3.12",
+            "python3.10",
+            "python3",
+            "opt/venv/bin/python3",
+            "usr/bin/python3.12",
+            "usr/bin/python3.10",
+            "usr/bin/python3",
+        ],
     )
     if python is None:
         raise RuntimeError(f"no python in {rootfs}")

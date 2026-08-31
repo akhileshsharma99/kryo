@@ -33,7 +33,17 @@ fi
 echo "pulling $IMAGE"
 sudo docker pull "$IMAGE"
 
-if [ -d "$DEST" ] && { [ -e "$DEST/usr/bin/python3" ] || [ -e "$DEST/usr/local/bin/python3" ] || [ -e "$DEST/opt/tritonserver/bin/tritonserver" ]; }; then
+already=false
+if sudo test -x "$DEST/usr/bin/python3.12" || sudo test -x "$DEST/usr/bin/python3.10"; then
+  already=true
+fi
+if sudo test -s "$DEST/usr/bin/python3" && sudo test -x "$DEST/usr/bin/python3"; then
+  already=true
+fi
+if sudo test -x "$DEST/opt/tritonserver/bin/tritonserver"; then
+  already=true
+fi
+if [ -d "$DEST" ] && [ "$already" = true ]; then
   echo "rootfs already present $DEST"
 else
   echo "exporting $IMAGE -> $DEST"
@@ -64,5 +74,15 @@ inject_nvidia() {
 }
 
 inject_nvidia || true
+# nvidia-container-cli can replace /usr/bin/python3 with a 0-byte stub and
+# leave /usr mode 0700. Restore a real interpreter and make the tree walkable.
+sudo chmod 755 "$DEST" "$DEST/usr" "$DEST/usr/bin" "$DEST/usr/lib" "$DEST/opt" 2>/dev/null || true
+if ! sudo test -x "$DEST/usr/bin/python3" || ! sudo test -s "$DEST/usr/bin/python3"; then
+  if sudo test -x "$DEST/usr/bin/python3.12"; then
+    sudo ln -sfn python3.12 "$DEST/usr/bin/python3"
+  elif sudo test -x "$DEST/usr/bin/python3.10"; then
+    sudo ln -sfn python3.10 "$DEST/usr/bin/python3"
+  fi
+fi
 echo "rootfs ready $DEST"
 ls -ld "$DEST"
