@@ -57,11 +57,11 @@ impl CudaCheckpoint {
             .into_iter()
             .filter(|pid| tree.contains(pid))
             .collect();
-        if pids.is_empty() {
-            for pid in &tree {
-                if Self::state(*pid).is_ok() {
-                    pids.push(*pid);
-                }
+        // nvidia-smi misses sibling CUDA PIDs; CRIU's plugin then 500s
+        // restore ("no restore thread"). Probe every descendant.
+        for pid in &tree {
+            if !pids.contains(pid) && Self::state(*pid).is_ok() {
+                pids.push(*pid);
             }
         }
         pids.sort_unstable();
