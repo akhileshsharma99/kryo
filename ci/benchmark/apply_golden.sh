@@ -25,6 +25,12 @@ echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope >/dev/null || true
 sudo nvidia-smi -pm 1 || true
 sudo ldconfig || true
 
+if ! command -v criu >/dev/null || ! criu check >/dev/null 2>&1; then
+  sudo add-apt-repository -y ppa:criu/ppa
+  sudo apt-get update -qq
+  sudo apt-get install -y criu libprotobuf-c1 libnet1
+  sudo ldconfig || true
+fi
 if ! command -v criu >/dev/null; then
   echo "criu missing after golden apply" >&2
   exit 1

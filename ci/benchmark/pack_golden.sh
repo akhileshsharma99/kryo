@@ -33,12 +33,15 @@ add "home/${USER:-ubuntu}/kryo/python/.venv"
 add "home/${USER:-ubuntu}/kryo/benchmarks/scenarios/yolov8n.pt"
 
 if command -v dpkg >/dev/null; then
-  while read -r path; do
-    case "$path" in
-      /|/.|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*) continue ;;
-      /*) add "${path#/}" ;;
-    esac
-  done < <(dpkg -L criu 2>/dev/null || true)
+  # criu's ELF deps live in other packages; dpkg -L criu alone is not enough.
+  for pkg in criu libprotobuf-c1 libnet1; do
+    while read -r path; do
+      case "$path" in
+        /|/.|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*) continue ;;
+        /*) add "${path#/}" ;;
+      esac
+    done < <(dpkg -L "$pkg" 2>/dev/null || true)
+  done
 fi
 
 if [ ! -s "$list" ]; then
@@ -69,9 +72,16 @@ if [ -f "$OUT/.golden-ok" ]; then
 fi
 sudo rm -rf "$OUT"
 sudo mkdir -p "$OUT"
-# --relative keeps /home/ubuntu/... as home/ubuntu/... under $OUT.
-sudo rsync -a --relative --files-from="$list" \
-  --exclude='**/.kryo/snapshots' --exclude='**/__pycache__' \
-  / "$OUT/"
+# tar --files-from includes directory trees. rsync --files-from does not
+# recurse listed dirs, which packed an 11M empty skeleton.
+sudo tar -C / --exclude='**/.kryo/snapshots' --exclude='**/__pycache__' \
+  --warning=no-file-changed --ignore-failed-read -cf - --files-from="$list" \
+  | sudo tar -C "$OUT" -xf -
+size="$(sudo du -sb "$OUT" | awk '{print $1}')"
+if [ "${size:-0}" -lt 1000000000 ]; then
+  echo "golden too small (${size:-0} bytes); refusing to stamp a stub image" >&2
+  sudo rm -rf "$OUT"
+  exit 1
+fi
 echo ok | sudo tee "$OUT/.golden-ok" >/dev/null
 echo "packed golden $OUT ($(sudo du -sh "$OUT" | awk '{print $1}'))"

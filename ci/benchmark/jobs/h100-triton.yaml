@@ -1,0 +1,23 @@
+# Triton 7B + 32B on two H100s. Pair with a vLLM-only run, or use after vLLM.
+
+idle_timeout: 20m
+provider: lambda
+caps:
+  gpu_1x_h100_sxm5: 2
+golden:
+  mode: tarball
+  store: filesystem
+  filesystem: kryo-golden
+snapshots:
+  store: local
+jobs:
+  - scenario: triton7
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 900
+    retries: 4
+  - scenario: triton32
+    gpu: gpu_1x_h100_sxm5
+    samples: 2
+    timeout: 1800
+    retries: 4

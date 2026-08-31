@@ -31,7 +31,7 @@ sudo apt-get install -y --no-install-recommends \
   python3 \
   software-properties-common
 
-if ! command -v criu >/dev/null; then
+if ! command -v criu >/dev/null || ! criu check >/dev/null 2>&1; then
   sudo add-apt-repository -y ppa:criu/ppa
   sudo apt-get update
   sudo apt-get install -y criu

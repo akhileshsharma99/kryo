@@ -65,6 +65,12 @@ class LoadPlanTests(unittest.TestCase):
         names = [job.scenario for job in plan.jobs]
         self.assertEqual(names, ["vllm7", "vllm32", "triton7", "triton32"])
 
+    def test_h100_triton_yaml(self) -> None:
+        plan = load_plan(HERE / "jobs" / "h100-triton.yaml")
+        self.assertEqual(plan.caps["gpu_1x_h100_sxm5"], 2)
+        names = [job.scenario for job in plan.jobs]
+        self.assertEqual(names, ["triton7", "triton32"])
+
     def test_digest_changes_with_sku(self) -> None:
         left = golden_digest("gpu_1x_a10", "550.00", "12.8")
         right = golden_digest("gpu_1x_h100_pcie", "550.00", "12.8")
