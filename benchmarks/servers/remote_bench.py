@@ -169,6 +169,7 @@ def which_in_rootfs(rootfs: Path, names: list[str]) -> str | None:
         )
         if probe.returncode == 0:
             return "/" + rel
+    log(f"no executable python/binary in {rootfs} among {sorted(seen)[:12]}")
     return None
 
 

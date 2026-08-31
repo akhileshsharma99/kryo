@@ -16,15 +16,19 @@ jobs:
     gpu: gpu_1x_h100_sxm5
     samples: 2
     timeout: 900
+    retries: 4
   - scenario: vllm32
     gpu: gpu_1x_h100_sxm5
     samples: 2
     timeout: 1800
+    retries: 4
   - scenario: triton7
     gpu: gpu_1x_h100_sxm5
     samples: 2
     timeout: 900
+    retries: 4
   - scenario: triton32
     gpu: gpu_1x_h100_sxm5
     samples: 2
     timeout: 1800
+    retries: 4

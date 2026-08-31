@@ -59,12 +59,7 @@ for d in proc sys dev dev/shm tmp run root/.cache/huggingface; do
 done
 
 inject_nvidia() {
-  if command -v nvidia-container-cli >/dev/null; then
-    sudo nvidia-container-cli --load-kmods configure \
-      --ldconfig=@/sbin/ldconfig --device=all --compute --utility "$DEST" \
-      && return 0
-  fi
-  echo "nvidia-container-cli configure failed; copying host driver libs"
+  echo "copying host NVIDIA driver libs into rootfs"
   while read -r lib; do
     [ -e "$lib" ] || continue
     rel="${lib#/}"
