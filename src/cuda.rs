@@ -29,7 +29,17 @@ impl CudaCheckpoint {
                 Self::action("unlock", pid, None)
             }
             "locked" => Self::action("unlock", pid, None),
-            "running" => Ok(()),
+            "running" => {
+                // CRIU's cuda plugin can fail on a sibling PID ("no restore
+                // thread") and still leave GPU memory checkpointed while
+                // reporting running. Unlock anyway so generate is not 500.
+                if Self::action("restore", pid, None).is_ok() {
+                    let _ = Self::action("unlock", pid, None);
+                } else {
+                    let _ = Self::action("unlock", pid, None);
+                }
+                Ok(())
+            }
             other => Err(Error::Cuda(format!(
                 "cuda-checkpoint pid {pid} in unexpected state {other:?}"
             ))),
