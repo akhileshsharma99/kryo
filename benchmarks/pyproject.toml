@@ -8,7 +8,7 @@ dependencies = [
     "kryo",
     "numpy>=2.4.0",
     "torch>=2.13.0",
-    "ultralytics>=8.4.0",
+    "ultralytics>=8.4.135",
     "transformers>=5.5.0",
     "accelerate>=1.12.0",
 ]
