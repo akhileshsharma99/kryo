@@ -282,7 +282,7 @@ wheels = [
 
 [[package]]
 name = "kryo"
-version = "0.2.0"
+version = "0.4.1"
 source = { directory = "../../../python" }
 
 [package.metadata]
@@ -892,7 +892,7 @@ wheels = [
 
 [[package]]
 name = "qwen"
-version = "0.2.0"
+version = "0.4.1"
 source = { virtual = "." }
 dependencies = [
     { name = "kryo" },
